@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      # Self-checks do not connect to PostgreSQL, but DI requires a syntactically valid connection string.
+      EXAMOPS_DB_CONNECTION: "Host=127.0.0.1;Port=5432;Database=examops_ci;Username=examops_ci;Password=offline-check-only;SSL Mode=Disable"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore ExamOps.sln
+
+      - name: Build
+        run: dotnet build ExamOps.sln --configuration Release --no-restore
+
+      - name: Offline self-check
+        run: dotnet run --no-build --configuration Release --project ExamOps.csproj -- --self-check
+
+      - name: Import parser check
+        run: dotnet run --no-build --configuration Release --project ExamOps.csproj -- --import-parser-check
