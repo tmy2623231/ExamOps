@@ -1,0 +1,149 @@
+@page "/exams/my"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject ExamAttemptService Service
+@inject IClock Clock
+@inject NavigationManager Navigation
+@inject ILogger<MyExams> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    <PageHeader Title="我的考试" Description="查看考试安排、继续未完成答卷，并在成绩公布后查看结果。" />
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载我的考试…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button></section>
+    }
+    else if (_result is null || _result.Items.Count == 0)
+    {
+        <section class="card exam-empty-card"><EmptyState Title="暂无考试安排" Description="考试下发后，可在这里查看开放时间并开始作答。" IconName="paper"><Action><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />刷新</button></Action></EmptyState></section>
+    }
+    else
+    {
+        <section class="exam-list" aria-label="我的考试安排">
+            @foreach (var exam in _result.Items)
+            {
+                var canStart = ExamLabels.CanStart(exam, TimeFormat.ToLocal(Clock.UtcNow));
+                var isHighlighted = HighlightTaskId.HasValue && exam.TaskId == HighlightTaskId.Value;
+                <article class="card exam-card @(isHighlighted ? "exam-card--highlight" : null)">
+                    <div class="exam-card__head"><div class="exam-card__title"><h2>@exam.TaskTitle</h2><p>@exam.TaskCode</p></div><span class="badge @ExamLabels.BadgeClass(exam.Status)">@ExamLabels.AssignmentStatus(exam.Status)</span></div>
+                    <dl class="exam-card__facts">
+                        <div><dt>开放时间</dt><dd>@TimeFormat.Display(exam.AvailableFrom)</dd></div>
+                        <div><dt>结束时间</dt><dd>@TimeFormat.Display(exam.AvailableTo)</dd></div>
+                        <div><dt>时长</dt><dd>@exam.DurationMinutes 分钟</dd></div>
+                        <div><dt>已用 / 可用次数</dt><dd>@(exam.AttemptsUsed + exam.InheritedAttemptsUsed) / @(exam.AttemptLimit + exam.GrantedAttempts)</dd></div>
+                    </dl>
+                    <p class="exam-card__meta">@UnavailableReason(exam, canStart)</p>
+                    <footer class="exam-card__footer">
+                        <span class="exam-card__meta">@(exam.CurrentAttemptId is null ? "尚未开始" : $"答卷 #{exam.CurrentAttemptId} · {ExamLabels.AttemptStatus(exam.CurrentAttemptStatus)}")</span>
+                        <div class="exam-actions">
+                            @if (exam.CurrentAttemptStatus == "InProgress" && exam.CurrentAttemptId is not null)
+                            {
+                                <a class="btn btn-primary" href="/exams/attempts/@exam.CurrentAttemptId"><Icon Name="edit" />继续作答</a>
+                            }
+                            else if (canStart)
+                            {
+                                <button type="button" class="btn btn-primary" disabled="@(_busyAssignmentId == exam.AssignmentId)" @onclick="() => RequestStart(exam)"><Icon Name="arrow-right" />开始考试</button>
+                            }
+                            @if (exam.CurrentAttemptId is not null && exam.CurrentAttemptStatus is "Submitted" or "AutoSubmitted" or "Graded" or "Voided")
+                            {
+                                <a class="btn btn-secondary" href="/exams/results/@exam.CurrentAttemptId">查看结果</a>
+                            }
+                        </div>
+                    </footer>
+                </article>
+            }
+        </section>
+        <section class="card"><Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" /></section>
+    }
+</div>
+
+<Modal IsOpen="_confirmOpen" Title="确认开始考试" OnClose="CloseConfirm">
+    <ChildContent>
+        <p class="exam-confirm-copy">即将开始“@_pending?.TaskTitle”。点击确认后立即计时，@_pending?.DurationMinutes 分钟内必须交卷。</p>
+        <Alert Kind="warning" Message="考试开始后不能暂停。作答每 30 秒自动保存；断线恢复后请继续答题，并确认服务器倒计时。" />
+        <p>本次为第 @((_pending?.AttemptsUsed ?? 0) + (_pending?.InheritedAttemptsUsed ?? 0) + 1) 次考试。</p>
+        @if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@(_busyAssignmentId > 0)" @onclick="CloseConfirm">取消</button><button type="button" class="btn btn-primary" disabled="@(_busyAssignmentId > 0 || _pending is null)" @onclick="StartAsync">确认开始并计时</button></FooterContent>
+</Modal>
+
+@code {
+    [SupplyParameterFromQuery(Name = "taskId")] public long? HighlightTaskId { get; set; }
+    private PagedResult<MyExamRow>? _result;
+    private MyExamRow? _pending;
+    private readonly Dictionary<long, ApiAuditMetadata> _startMetadata = [];
+    private int _pageIndex = 1;
+    private int _loadVersion;
+    private const int PageSize = 20;
+    private long _busyAssignmentId;
+    private bool _loading = true;
+    private bool _confirmOpen;
+    private string? _loadError;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            var result = await Service.GetMyExamsAsync(_pageIndex, PageSize);
+            if (version != _loadVersion) return;
+            _result = result;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载我的考试失败"); _loadError = "我的考试加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+
+    private string UnavailableReason(MyExamRow exam, bool canStart)
+    {
+        if (canStart) return "当前可以开始考试。";
+        if (exam.CurrentAttemptStatus == "InProgress") return exam.DeadlineAt is null ? "答卷正在进行中，请继续作答。" : $"答卷截止时间：{TimeFormat.Display(exam.DeadlineAt)}";
+        var now = TimeFormat.ToLocal(Clock.UtcNow);
+        if (now < exam.AvailableFrom) return $"尚未开放：{TimeFormat.Display(exam.AvailableFrom)}";
+        if (now >= exam.AvailableTo) return "考试时间窗已结束。";
+        if (exam.AttemptsUsed + exam.InheritedAttemptsUsed >= exam.AttemptLimit + exam.GrantedAttempts) return "考试次数已用尽；如需重考，请联系管理员追加授权。";
+        return exam.StatusMessage ?? "当前状态不可开始考试。";
+    }
+
+    private void RequestStart(MyExamRow exam)
+    {
+        if (_busyAssignmentId > 0 || !ExamLabels.CanStart(exam, TimeFormat.ToLocal(Clock.UtcNow))) return;
+        _pending = exam; _error = null; _confirmOpen = true;
+    }
+
+    private void CloseConfirm() { if (_busyAssignmentId == 0) _confirmOpen = false; }
+
+    private async Task StartAsync()
+    {
+        if (_pending is null || _busyAssignmentId > 0) return;
+        _busyAssignmentId = _pending.AssignmentId; _error = null;
+        try
+        {
+            if (!_startMetadata.TryGetValue(_pending.AssignmentId, out var metadata))
+            {
+                metadata = ExamAudit.Create("exam-attempt-start", _pending.AssignmentId);
+                _startMetadata[_pending.AssignmentId] = metadata;
+            }
+            var result = await Service.StartAsync(_pending.AssignmentId, new StartExamInput(_pending.RowVersion), metadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "开始考试失败。"; if (result.Code == "CONCURRENCY_CONFLICT") _startMetadata.Remove(_pending.AssignmentId); return; }
+            Navigation.NavigateTo($"/exams/attempts/{result.Value!.AttemptId}", forceLoad: true);
+        }
+        catch (Exception ex) { Logger.LogError(ex, "开始考试失败"); _error = "开始考试失败，请检查连接后重试。"; }
+        finally { _busyAssignmentId = 0; }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadVersion++;
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,138 @@
+@page "/exams/tasks"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.ExamTaskRead)]
+@inject ExamTaskService Service
+@inject OrganizationService Organization
+@inject ILogger<ExamTasks> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    <PageHeader Title="考试任务" Description="创建考试草稿，管理发布周期、下发安排与考务工作人员。">
+        <Actions>
+            <AuthorizeView Policy="@Permissions.ExamTaskCreate"><a class="btn btn-primary" href="/exams/tasks/new"><Icon Name="plus" />新建考试</a></AuthorizeView>
+            <AuthorizeView Policy="@Permissions.ExamAssignmentRead"><a class="btn btn-secondary" href="/exams/assignments"><Icon Name="users" />分配管理</a></AuthorizeView>
+        </Actions>
+    </PageHeader>
+
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    @if (!string.IsNullOrWhiteSpace(_filterError)) { <Alert Kind="warning" Message="@_filterError" /> }
+
+    <section class="card exam-toolbar" aria-label="考试任务筛选">
+        <div class="field"><label for="task-keyword">搜索名称或编码</label><input id="task-keyword" class="input" type="search" value="@_keyword" @oninput="OnKeywordInput" placeholder="输入关键词" autocomplete="off" /></div>
+        <div class="field"><label for="task-department">部门</label><select id="task-department" class="select" @bind="_departmentId" @bind:after="FiltersChangedAsync"><option value="">全部部门</option>@foreach (var department in _departments) { <option value="@department.Id">@department.Name</option> }</select></div>
+        <div class="field"><label for="task-status">状态</label><select id="task-status" class="select" @bind="_status" @bind:after="FiltersChangedAsync"><option value="">全部状态</option><option value="Draft">草稿</option><option value="Published">已发布</option><option value="Closed">已关闭</option><option value="Revoked">已撤回</option><option value="Archived">已归档</option></select></div>
+        <button type="button" class="btn btn-secondary" @onclick="ClearAsync"><Icon Name="refresh" />重置</button>
+    </section>
+
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载考试任务…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button></section>
+    }
+    else if (_result is null || _result.Items.Count == 0)
+    {
+        <section class="card exam-empty-card"><EmptyState Title="没有符合条件的考试" Description="调整筛选条件，或创建草稿开始配置考试。" IconName="paper"><Action>@if (string.IsNullOrWhiteSpace(_keyword) && !_departmentId.HasValue && string.IsNullOrWhiteSpace(_status)) { <AuthorizeView Policy="@Permissions.ExamTaskCreate"><a class="btn btn-primary" href="/exams/tasks/new"><Icon Name="plus" />新建考试</a></AuthorizeView> } else { <button type="button" class="btn btn-secondary" @onclick="ClearAsync">清除筛选</button> }</Action></EmptyState></section>
+    }
+    else
+    {
+        <section class="exam-list" aria-label="考试任务列表">
+            @foreach (var task in _result.Items)
+            {
+                <article class="card exam-card">
+                    <div class="exam-card__head">
+                        <div class="exam-card__title"><h2><a href="/exams/tasks/@task.Id">@task.Title</a></h2><p>@task.Code · @task.DepartmentName</p></div>
+                        <span class="badge @ExamLabels.BadgeClass(task.Status)">@ExamLabels.TaskStatus(task.Status)</span>
+                    </div>
+                    <dl class="exam-card__facts">
+                        <div><dt>考试时间</dt><dd>@task.ExamDate?.ToString("yyyy-MM-dd")</dd></div>
+                        <div><dt>开放时间</dt><dd>@TimeFormat.Display(task.AvailableFrom)</dd></div>
+                        <div><dt>时长 / 次数</dt><dd>@task.DurationMinutes 分钟 / @task.AttemptLimit 次</dd></div>
+                        <div><dt>安排 / 作答中</dt><dd>@task.AssignmentCount / @task.InProgressCount</dd></div>
+                    </dl>
+                    <footer class="exam-card__footer"><span class="exam-card__meta">试卷：@(task.PaperTitle ?? "未选择")</span><a class="btn btn-secondary" href="/exams/tasks/@task.Id"><Icon Name="edit" />查看详情</a></footer>
+                </article>
+            }
+        </section>
+        <section class="card"><Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" /></section>
+    }
+</div>
+
+@code {
+    private PagedResult<ExamTaskRow>? _result;
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private CancellationTokenSource? _searchCancellation;
+    private string _keyword = "";
+    private long? _departmentId;
+    private string _status = "";
+    private int _pageIndex = 1;
+    private int _loadVersion;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private string? _loadError;
+    private string? _filterError;
+    private string? _message;
+    private string _messageKind = "info";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _departments = await Organization.GetDepartmentsAsync(); }
+        catch (Exception ex) { Logger.LogError(ex, "加载考试部门选项失败"); _filterError = "部门选项加载失败，仍可按名称和状态筛选。"; }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            var query = new ExamTaskQuery(string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(), _departmentId, string.IsNullOrWhiteSpace(_status) ? null : _status, _pageIndex, PageSize);
+            var result = await Service.GetPagedAsync(query);
+            if (version != _loadVersion) return;
+            _result = result;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载考试任务列表失败"); _loadError = "考试任务加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task OnKeywordInput(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            _pageIndex = 1;
+            await LoadAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private Task FiltersChangedAsync() { _pageIndex = 1; return LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+    private async Task ClearAsync()
+    {
+        _searchCancellation?.Cancel();
+        _keyword = ""; _departmentId = null; _status = ""; _pageIndex = 1; _message = null;
+        await LoadAsync();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadVersion++;
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

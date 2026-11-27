@@ -1,0 +1,81 @@
+@page "/org/roles"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.RoleAssign)]
+@using ExamOps.Model.Dtos
+@inject RoleService Service
+@inject ILogger<Roles> Logger
+
+<PageHeader Title="角色权限" Description="角色由部署侧维护；分配用户时再按角色规则限定部门数据范围。" />
+
+<Alert Kind="info" Message="角色定义与权限项只读。需要调整职责或权限时，请通过部署种子变更并重新签发受影响用户的登录状态。" />
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载角色…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card"><Alert Kind="danger" Message="@_loadError" /><button class="btn btn-secondary" @onclick="LoadAsync">重新加载</button></section>
+}
+else if (_roles.Count == 0)
+{
+    <section class="card"><EmptyState Title="还没有角色" Description="请先执行部署种子初始化系统角色。" IconName="shield" /></section>
+}
+else
+{
+    <div class="role-card-grid">
+        @foreach (var role in _roles)
+        {
+            <section class="card role-card">
+                <div class="role-card-header">
+                    <div><h2>@role.Name</h2><code>@role.Code</code></div>
+                    @if (role.IsSystem) { <span class="badge badge-info">系统角色</span> }
+                    @if (!role.IsActive) { <span class="badge badge-warning">已停用</span> }
+                </div>
+                <p class="role-count">已分配给 <strong>@role.UserCount</strong> 名用户 · @ScopeLabel(role.ScopeType)</p>
+                <div class="permission-tags" aria-label="角色权限">
+                    @if (role.Permissions.Count == 0) { <span class="muted">暂无权限</span> }
+                    else
+                    {
+                        foreach (var permission in role.Permissions.Take(8)) { <span class="permission-tag">@PermissionLabel(permission)</span> }
+                        @if (role.Permissions.Count > 8) { <span class="permission-tag">+@(role.Permissions.Count - 8)</span> }
+                    }
+                </div>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private IReadOnlyList<RoleRow> _roles = [];
+    private IReadOnlyList<PermissionRow> _permissions = [];
+    private bool _loading = true;
+    private string? _loadError;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            _roles = await Service.GetAllAsync();
+            _permissions = await Service.GetPermissionsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载角色失败");
+            _loadError = "角色列表加载失败，请稍后重试。";
+        }
+        finally { _loading = false; }
+    }
+
+    private string PermissionLabel(string code) => _permissions.FirstOrDefault(x => x.Code == code)?.Name ?? code;
+
+    private static string ScopeLabel(string scopeType) => scopeType switch
+    {
+        "All" => "组织全局", "Department" => "仅本部门", "DepartmentSubtree" => "本部门及下级",
+        "Assigned" => "仅显式指派", "Self" => "仅本人", _ => scopeType
+    };
+}

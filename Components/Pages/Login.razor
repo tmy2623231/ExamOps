@@ -1,0 +1,75 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@attribute [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("login")]
+@layout ExamOps.Components.Layout.AuthLayout
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+@inject AuthService AuthService
+@inject IHttpContextAccessor HttpContextAccessor
+@inject NavigationManager Navigation
+
+<section class="login-card card" aria-labelledby="login-title">
+    <div class="login-brand"><span class="brand-mark" aria-hidden="true">E</span><span><strong>ExamOps</strong><small>考试运营平台</small></span></div>
+    <div class="login-heading">
+        <h1 id="login-title">登录管理后台</h1>
+        <p>使用组织分配的账号继续。</p>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <Alert Kind="danger" Message="@_error" />
+    }
+    else if (string.Equals(Reason, "session_revoked", StringComparison.Ordinal))
+    {
+        <Alert Kind="warning" Message="当前账号已被停用或权限已变更，已安全下线，请重新登录。" />
+    }
+    <EditForm FormName="login" name="login" Model="Input" OnValidSubmit="LoginAsync" Enhance>
+        <DataAnnotationsValidator />
+        <ValidationSummary class="validation-summary" />
+        <div class="field">
+            <label for="username">账号</label>
+            <InputText id="username" class="input" autocomplete="username" @bind-Value="Input.Username" placeholder="请输入账号" />
+            <ValidationMessage For="() => Input.Username" class="field-error" />
+        </div>
+        <div class="field">
+            <label for="password">密码</label>
+            <InputText id="password" class="input" type="password" autocomplete="current-password" @bind-Value="Input.Password" placeholder="请输入密码" />
+            <ValidationMessage For="() => Input.Password" class="field-error" />
+        </div>
+        <button type="submit" class="btn btn-primary w-full">登录</button>
+    </EditForm>
+    <p class="login-help">忘记密码或账号被停用，请联系组织管理员。</p>
+</section>
+
+@code {
+    [SupplyParameterFromForm] public LoginInput Input { get; set; } = new();
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? Reason { get; set; }
+    private string? _error;
+
+    private async Task LoginAsync()
+    {
+        var http = HttpContextAccessor.HttpContext ?? throw new InvalidOperationException("登录请求缺少 HTTP 上下文。");
+        var result = await AuthService.LoginAsync(Input.Username, Input.Password, http.Connection.RemoteIpAddress?.ToString(), http.Request.Headers.UserAgent.ToString());
+        if (!result.IsSuccess || result.Value is null)
+        {
+            _error = result.Error;
+            return;
+        }
+        await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, AuthService.CreatePrincipal(result.Value));
+        var destination = result.Value.MustChangePassword ? "/account/password" : (IsLocalReturnUrl(ReturnUrl) ? ReturnUrl! : "/");
+        Navigation.NavigateTo(destination, forceLoad: true);
+    }
+
+    private static bool IsLocalReturnUrl(string? returnUrl)
+        => !string.IsNullOrWhiteSpace(returnUrl) && returnUrl.StartsWith('/') && !returnUrl.StartsWith("//") && !returnUrl.Contains('\\');
+
+    public sealed class LoginInput
+    {
+        [Required(ErrorMessage = "请输入账号")]
+        [StringLength(64, ErrorMessage = "账号不能超过 64 个字符")]
+        public string Username { get; set; } = "";
+        [Required(ErrorMessage = "请输入密码")]
+        public string Password { get; set; } = "";
+    }
+}

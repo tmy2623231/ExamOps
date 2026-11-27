@@ -1,0 +1,284 @@
+@page "/org/departments"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.DepartmentRead)]
+@using ExamOps.Model.Dtos
+@inject OrganizationService Service
+@inject ExamOps.Infra.Ui.ToastService Toasts
+@inject IJSRuntime JS
+@inject ILogger<Departments> Logger
+
+<PageHeader Title="部门与组织模板" Description="维护单组织下的部门树，或从行业模板一键快速初始化部门结构。">
+    <Actions>
+        <AuthorizeView Policy="@Permissions.DepartmentCreate">
+            <button type="button" class="btn btn-secondary" @onclick="OpenTemplates" disabled="@(_rows.All(x => !x.IsActive))"><Icon Name="grid" />从模板初始化</button>
+            <button type="button" class="btn btn-primary" @onclick="Create"><Icon Name="plus" />新建部门</button>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" /> }
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载部门…</div>
+}
+else
+{
+    <section class="card" aria-label="部门列表">
+        @if (_rows.Count == 0)
+        {
+            <EmptyState Title="还没有部门" Description="创建根部门后，可在其下逐级建立部门。" IconName="building" />
+        }
+        else
+        {
+            <div class="table-wrap" role="region" aria-label="部门表格，可横向滚动" tabindex="0">
+                <table class="table department-table">
+                    <caption class="sr-only">部门名称、路径、用户数、状态与操作</caption>
+                    <thead><tr><th scope="col">部门名称</th><th scope="col">路径</th><th scope="col">用户数</th><th scope="col">状态</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var row in _rows)
+                    {
+                        var depth = Math.Max(0, row.Path.Count(c => c == '.') - 1);
+                        <tr class="@(row.IsActive ? null : "row-muted")">
+                            <td><span class="department-name depth-@Math.Min(depth, 5)"><Icon Name="building" />@row.Name</span></td>
+                            <td><code>@row.Path</code></td>
+                            <td>@row.UserCount</td>
+                            <td><span class="badge @(row.IsActive ? "badge-success" : "badge-neutral")">@(row.IsActive ? "启用" : "停用")</span></td>
+                            <td>
+                                <AuthorizeView Policy="@Permissions.DepartmentUpdate">
+                                    <div class="table-actions">
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => Edit(row)">编辑</button>
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => ToggleAsync(row)" disabled="@_busy">@(row.IsActive ? "停用" : "启用")</button>
+                                    </div>
+                                </AuthorizeView>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+<Modal IsOpen="_editorOpen" Title="@(_editingId.HasValue ? "编辑部门" : "新建部门")" OnClose="CloseEditor">
+    <ChildContent>
+        <div class="field">
+            <label for="department-name">部门名称</label>
+            <input id="department-name" class="input" @bind="_input.Name" maxlength="100" autocomplete="off" />
+        </div>
+        @if (!_editingId.HasValue)
+        {
+            <div class="field">
+                <label for="department-parent">上级部门</label>
+                <select id="department-parent" class="select" @bind="_input.ParentId">
+                    <option value="">无（根部门）</option>
+                    @foreach (var row in _rows.Where(x => x.IsActive)) { <option value="@row.Id">@row.Name（@row.Path）</option> }
+                </select>
+                <span class="field-hint">根部门仅组织管理员可创建。</span>
+            </div>
+        }
+        <span class="field-hint">停用部门前，请先停用其全部子部门，并迁移仍以它为主部门的活跃用户。</span>
+    </ChildContent>
+    <FooterContent>
+        <button class="btn btn-secondary" @onclick="CloseEditor">取消</button>
+        <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_busy">@(_busy ? "正在保存…" : "保存")</button>
+    </FooterContent>
+</Modal>
+
+<Modal IsOpen="_templateOpen" Title="从行业模板快速初始化组织" Wide="true" OnClose="CloseTemplates">
+    <ChildContent>
+        <div class="field">
+            <label for="template-parent">挂载到哪个上级部门下？</label>
+            <select id="template-parent" class="select" @bind="_templateParentId">
+                @foreach (var row in _rows.Where(x => x.IsActive))
+                {
+                    <option value="@row.Id">@row.Name（@row.Path）</option>
+                }
+            </select>
+            <span class="field-hint">若目标位置已存在同名启用部门，将自动跳过并继续挂载其子部门，不会重复创建。</span>
+        </div>
+        <div class="tpl-grid">
+            <div>
+                <TemplateRadioCards AriaLabel="选择行业组织模板" Options="_templateOptions" SelectedKey="@_selectedTemplateKey" SelectedKeyChanged="k => _selectedTemplateKey = k" />
+            </div>
+            <div class="tpl-preview card">
+                <header class="tpl-preview__head"><strong>将生成的部门结构预览</strong></header>
+                @if (SelectedPreset is { } preset)
+                {
+                    <ul class="tpl-tree">
+                        @foreach (var node in preset.Nodes)
+                        {
+                            <li>
+                                <span class="tpl-node"><Icon Name="building" />@node.Name</span>
+                                @if (node.Children.Count > 0)
+                                {
+                                    <ul>
+                                        @foreach (var child in node.Children)
+                                        {
+                                            <li><span class="tpl-node tpl-node--child">@child.Name</span></li>
+                                        }
+                                    </ul>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_templateError)) { <Alert Kind="danger" Message="@_templateError" /> }
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseTemplates">取消</button>
+        <button type="button" class="btn btn-primary" disabled="@(_busy || _templateParentId <= 0)" @onclick="ApplyTemplateAsync">
+            <Icon Name="check" />@(_busy ? "正在套用模板…" : "一键套用模板")
+        </button>
+    </FooterContent>
+</Modal>
+
+@code {
+    private IReadOnlyList<DepartmentRow> _rows = [];
+    private IReadOnlyList<DepartmentTemplatePreset> _templates = [];
+    private IReadOnlyList<TemplateRadioCards.RadioCardOption> _templateOptions = [];
+    private bool _loading = true;
+    private bool _editorOpen;
+    private bool _templateOpen;
+    private bool _busy;
+    private long? _editingId;
+    private long _rowVersion;
+    private long _templateParentId;
+    private string _selectedTemplateKey = "safety";
+    private string? _templateError;
+    private DepartmentInput _input = new();
+    private string? _message;
+    private string _messageKind = "info";
+
+    private DepartmentTemplatePreset? SelectedPreset => _templates.FirstOrDefault(x => x.Key == _selectedTemplateKey);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _templates = Service.GetDepartmentTemplates();
+        _templateOptions = _templates.Select(t => new TemplateRadioCards.RadioCardOption(
+            t.Key, t.Name, t.Description, t.Badge, $"{CountNodes(t.Nodes)} 节点")).ToList();
+        await LoadAsync();
+    }
+
+    private static int CountNodes(IReadOnlyList<DepartmentTemplateNode> nodes)
+        => nodes.Sum(n => 1 + CountNodes(n.Children));
+
+    private void OpenTemplates()
+    {
+        _templateError = null;
+        _templateParentId = _rows.FirstOrDefault(x => x.IsActive && x.ParentId is null)?.Id
+            ?? _rows.FirstOrDefault(x => x.IsActive)?.Id ?? 0;
+        _templateOpen = true;
+    }
+
+    private void CloseTemplates() { if (!_busy) _templateOpen = false; }
+
+    private async Task ApplyTemplateAsync()
+    {
+        if (_busy || _templateParentId <= 0) return;
+        _busy = true;
+        _templateError = null;
+        try
+        {
+            var result = await Service.ApplyDepartmentTemplateAsync(_templateParentId, _selectedTemplateKey);
+            if (!result.IsSuccess || result.Value is null)
+            {
+                _templateError = result.Error ?? "套用模板失败";
+                return;
+            }
+            _templateOpen = false;
+            var msg = $"模板已套用：新建 {result.Value.CreatedCount} 个部门，跳过已有 {result.Value.SkippedCount} 个。";
+            Show(msg, "success");
+            await Toasts.SuccessAsync("组织模板初始化完成", msg);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "套用组织模板失败");
+            _templateError = "套用模板失败，请稍后重试。";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try { _rows = await Service.GetDepartmentsAsync(); }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载部门失败");
+            Show("部门列表加载失败，请稍后重试。", "danger");
+        }
+        finally { _loading = false; }
+    }
+
+    private void Create()
+    {
+        _editingId = null;
+        _input = new DepartmentInput();
+        _editorOpen = true;
+    }
+
+    private void Edit(DepartmentRow row)
+    {
+        _editingId = row.Id;
+        _rowVersion = row.RowVersion;
+        _input = new DepartmentInput { Name = row.Name, ParentId = row.ParentId };
+        _editorOpen = true;
+    }
+
+    private void CloseEditor() { if (!_busy) _editorOpen = false; }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _message = null;
+        try
+        {
+            var result = _editingId.HasValue
+                ? await Service.UpdateDepartmentAsync(_editingId.Value, _input.Name, _rowVersion)
+                : await Service.CreateDepartmentAsync(_input.Name, _input.ParentId);
+            if (!result.IsSuccess) { Show(result.Error ?? "保存失败", "danger"); return; }
+            _editorOpen = false;
+            Show(_editingId.HasValue ? "部门已更新。" : "部门已创建。", "success");
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "保存部门失败");
+            Show("部门保存失败，请稍后重试。", "danger");
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ToggleAsync(DepartmentRow row)
+    {
+        var activating = !row.IsActive;
+        if (!activating && !await JS.InvokeAsync<bool>("confirm", $"确认停用“{row.Name}”？")) return;
+        _busy = true;
+        _message = null;
+        try
+        {
+            var result = await Service.SetDepartmentActiveAsync(row.Id, activating, row.RowVersion);
+            Show(result.IsSuccess ? (activating ? "部门已启用。" : "部门已停用。") : result.Error ?? "操作失败", result.IsSuccess ? "success" : "danger");
+            if (result.IsSuccess) await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "切换部门状态失败");
+            Show("部门状态更新失败，请稍后重试。", "danger");
+        }
+        finally { _busy = false; }
+    }
+
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+
+    public sealed class DepartmentInput
+    {
+        public string Name { get; set; } = "";
+        public long? ParentId { get; set; }
+    }
+}

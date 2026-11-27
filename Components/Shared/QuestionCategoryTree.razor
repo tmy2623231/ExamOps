@@ -1,0 +1,38 @@
+<ul class="question-category-tree @($"depth-{Math.Min(Depth, 4)}")" aria-label="分类树">
+    @foreach (var category in Categories.Where(x => x.ParentId == ParentId).OrderBy(x => x.Name, StringComparer.Ordinal).ThenBy(x => x.Id))
+    {
+        var children = Categories.Where(x => x.ParentId == category.Id).ToArray();
+        <li>
+            <div class="question-category-node @(category.Id == SelectedId ? "is-selected" : null) @(category.IsActive ? null : "is-inactive")">
+                <button type="button" class="question-category-select" aria-pressed="@(category.Id == SelectedId)" @onclick="() => SelectedChanged.InvokeAsync(category)">
+                    <Icon Name="arrow-right" />
+                    <span>@category.Name</span>
+                    @if (!category.IsActive) { <span class="badge badge-neutral">已停用</span> }
+                </button>
+                @if (CanManage)
+                {
+                    <div class="question-category-actions">
+                        <button type="button" class="btn btn-ghost btn-sm" @onclick="() => AddChildChanged.InvokeAsync(category)">添加子分类</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@Disabled" @onclick="() => ToggleChanged.InvokeAsync(category)">@(category.IsActive ? "停用" : "启用")</button>
+                    </div>
+                }
+            </div>
+            @if (children.Length > 0)
+            {
+                <QuestionCategoryTree Categories="Categories" ParentId="category.Id" Depth="@(Depth + 1)" SelectedId="SelectedId" CanManage="CanManage" Disabled="Disabled" SelectedChanged="SelectedChanged" AddChildChanged="AddChildChanged" ToggleChanged="ToggleChanged" />
+            }
+        </li>
+    }
+</ul>
+
+@code {
+    [Parameter] public IReadOnlyList<QuestionCategoryRow> Categories { get; set; } = [];
+    [Parameter] public long? ParentId { get; set; }
+    [Parameter] public int Depth { get; set; }
+    [Parameter] public long? SelectedId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<QuestionCategoryRow> SelectedChanged { get; set; }
+    [Parameter] public EventCallback<QuestionCategoryRow> AddChildChanged { get; set; }
+    [Parameter] public EventCallback<QuestionCategoryRow> ToggleChanged { get; set; }
+}

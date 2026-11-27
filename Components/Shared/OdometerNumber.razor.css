@@ -1,0 +1,25 @@
+/* Lucian UX/UI Prompt #098 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#098 */
+.u098-odo {
+  display: inline-flex;
+  align-items: flex-start;
+  height: 40px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 40px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ux-ink);
+}
+::deep .u098-col {
+  display: inline-flex;
+  flex-direction: column;
+  transform: translateY(calc(var(--d, 0) * -40px));
+  transition: transform .85s cubic-bezier(.3, 1.25, .5, 1);
+  transition-delay: calc(var(--i, 0) * 40ms);
+}
+::deep .u098-col span { height: 40px; }
+::deep .u098-sym { display: inline-block; }
+::deep .u098-sym.sm { font-size: 18px; margin-left: 2px; color: var(--ux-ink-2); }

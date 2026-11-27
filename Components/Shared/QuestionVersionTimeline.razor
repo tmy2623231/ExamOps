@@ -1,0 +1,28 @@
+<aside class="card version-panel" aria-labelledby="question-version-title">
+    <header class="card-header"><h2 id="question-version-title" class="card-title">版本时间线</h2></header>
+    <div class="card-body">
+        @if (Versions.Count == 0)
+        {
+            <EmptyState Title="暂无版本" Description="保存题目后将生成第一个草稿版本。" IconName="grid" />
+        }
+        else
+        {
+            <ol class="version-timeline">
+                @foreach (var version in Versions)
+                {
+                    <li class="@(version.IsCurrent ? "is-current" : null)">
+                        <div class="version-title"><strong>v@(version.VersionNo)</strong><span class="badge @StatusClass(version.Status)">@StatusLabel(version.Status)</span></div>
+                        <p>@(version.IsCurrent ? "当前编辑 / 发布版本" : "历史版本")</p>
+                        @if (version.PublishedAt.HasValue) { <small>发布于 @TimeFormat.Display(version.PublishedAt)</small> }
+                    </li>
+                }
+            </ol>
+        }
+    </div>
+</aside>
+
+@code {
+    [Parameter] public IReadOnlyList<QuestionVersionRow> Versions { get; set; } = [];
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+}

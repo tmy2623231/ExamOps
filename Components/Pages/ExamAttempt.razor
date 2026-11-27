@@ -1,0 +1,475 @@
+@page "/exams/attempts/{Id:long}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject ExamAttemptService Service
+@inject IClock Clock
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+@inject ILogger<ExamAttempt> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在恢复答卷…</div>
+    }
+    else if (_detail is null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@(_loadError ?? "答卷不存在或不属于当前账号。")" /><a class="btn btn-secondary" href="/exams/my"><Icon Name="arrow-left" />返回我的考试</a></section>
+    }
+    else if (_detail.Status != "InProgress")
+    {
+        <PageHeader Title="@_detail.TaskTitle" Description="本次作答已结束，答案不可再修改。">
+            <Actions><a class="btn btn-secondary" href="/exams/my"><Icon Name="arrow-left" />我的考试</a><a class="btn btn-primary" href="/exams/results/@_detail.Id">查看考试结果<Icon Name="arrow-right" /></a></Actions>
+        </PageHeader>
+        <section class="card card-body"><span class="badge @ExamLabels.BadgeClass(_detail.Status)">@ExamLabels.AttemptStatus(_detail.Status)</span><p class="exam-confirm-copy mt-0">交卷时间：@TimeFormat.Display(_detail.SubmittedAt)</p></section>
+    }
+    else
+    {
+        <header class="exam-attempt-header">
+            <div><h1>@_detail.TaskTitle</h1><p>第 @_detail.AttemptNo 次作答 · 服务器截止 @TimeFormat.Display(_detail.DeadlineAt)</p></div>
+            <div class="exam-timer @(_remaining <= TimeSpan.FromMinutes(5) ? "exam-timer--warning" : null)"><small>服务器剩余时间</small><time role="timer" aria-live="off">@ExamLabels.Countdown(_remaining)</time></div>
+        </header>
+        @if (!_online) { <Alert Kind="warning" Message="网络连接已中断。可继续在本页作答，内容会暂存在当前浏览器标签页；恢复连接后请确认自动保存成功。" /> }
+        @if (_remaining <= TimeSpan.Zero) { <Alert Kind="warning" Message="考试时间已到，答案已停止编辑。请立即交卷；服务器保留 30 秒保存与交卷宽限，之后将自动交卷。" /> }
+        @if (!_detail.CanSave) { <Alert Kind="danger" Message="当前答卷已不允许保存（可能已被撤回或超过服务器宽限时间）。请刷新状态或联系监考人员。" /> }
+        @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="success" Message="@_message" /> }
+        @if (!string.IsNullOrWhiteSpace(_loadError)) { <Alert Kind="danger" Message="@_loadError" /> }
+        @if (!string.IsNullOrWhiteSpace(_draftWarning)) { <Alert Kind="warning" Message="@_draftWarning" /> }
+        @if (!string.IsNullOrWhiteSpace(_saveError)) { <Alert Kind="danger" Message="@_saveError" /><button type="button" class="btn btn-secondary" @onclick="ResyncAsync"><Icon Name="refresh" />重新同步服务器答卷</button> }
+        <div class="exam-save-status" role="status" aria-live="polite"><span>@SaveStatus</span><span>已答 @AnsweredCount / @_questions.Count() 题</span><button type="button" class="btn btn-secondary" disabled="@(_saveBusy || !_detail.CanSave || _dirty.Count == 0)" @onclick="() => SaveAnswersAsync()"><Icon Name="check" />@(_saveBusy ? "正在保存…" : "立即保存")</button></div>
+
+        @if (_questions.Count == 0)
+        {
+            <section class="card"><EmptyState Title="试卷没有可用题目" Description="当前答卷快照不含题目，无法继续作答。请联系监考人员处理。" IconName="alert" /></section>
+        }
+        else
+        {
+        <div class="exam-attempt-layout">
+            <div>
+                @foreach (var section in _detail.Paper.Sections)
+                {
+                    <section aria-labelledby="section-@section.SectionId">
+                        <h2 id="section-@section.SectionId">@section.Title</h2>
+                        @foreach (var question in section.Questions)
+                        {
+                            <article class="card exam-question-card" id="q-@question.QuestionVersionId">
+                                <div class="exam-question-card__head"><span class="badge badge-neutral">第 @QuestionNumber(question.QuestionVersionId) 题 · @ExamLabels.QuestionType(question.Type)</span><span class="field-hint">@question.Score.ToString("0.##") 分</span></div>
+                                <h3>@question.Stem</h3>
+                                @if (question.Type == "SingleChoice")
+                                {
+                                    <div class="exam-answer-options" role="radiogroup" aria-label="第 @QuestionNumber(question.QuestionVersionId) 题答案">
+                                        @foreach (var option in question.Options)
+                                        {
+                                            <label class="exam-answer-option"><input type="radio" name="q-@question.QuestionVersionId" value="@option.Label" checked="@(ExamAnswers.ReadSingle(Answer(question.QuestionVersionId)) == option.Label)" disabled="@(!Editable)" @onchange="() => SetSingleAsync(question, option.Label)" /><span><strong>@option.Label.</strong> @option.Text</span></label>
+                                        }
+                                    </div>
+                                }
+                                else if (question.Type == "MultipleChoice")
+                                {
+                                    <div class="exam-answer-options" role="group" aria-label="第 @QuestionNumber(question.QuestionVersionId) 题答案">
+                                        @foreach (var option in question.Options)
+                                        {
+                                            var selected = ExamAnswers.ReadMultiple(Answer(question.QuestionVersionId)).Contains(option.Label, StringComparer.Ordinal);
+                                            <label class="exam-answer-option"><input type="checkbox" checked="@selected" disabled="@(!Editable)" @onchange="e => ToggleMultipleAsync(question, option.Label, e.Value)" /><span><strong>@option.Label.</strong> @option.Text</span></label>
+                                        }
+                                    </div>
+                                }
+                                else if (question.Type == "TrueFalse")
+                                {
+                                    <div class="exam-answer-options" role="radiogroup" aria-label="第 @QuestionNumber(question.QuestionVersionId) 题答案">
+                                        <label class="exam-answer-option"><input type="radio" name="q-@question.QuestionVersionId" checked="@(ExamAnswers.ReadTrueFalse(Answer(question.QuestionVersionId)) == true)" disabled="@(!Editable)" @onchange="e => SetTrueFalseAsync(question, true)" /><span><strong>正确</strong></span></label>
+                                        <label class="exam-answer-option"><input type="radio" name="q-@question.QuestionVersionId" checked="@(ExamAnswers.ReadTrueFalse(Answer(question.QuestionVersionId)) == false)" disabled="@(!Editable)" @onchange="e => SetTrueFalseAsync(question, false)" /><span><strong>错误</strong></span></label>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <Alert Kind="warning" Message="该题型暂不支持在线作答，请联系监考人员处理。" />
+                                }
+                            </article>
+                        }
+                    </section>
+                }
+            </div>
+            <aside class="card exam-question-nav" aria-label="题目导航">
+                <h2>题目导航</h2>
+                <div class="exam-question-grid">
+                    @foreach (var question in _questions)
+                    {
+                        var number = QuestionNumber(question.QuestionVersionId);
+                        var answered = IsAnswered(question.QuestionVersionId);
+                        <a class="exam-question-jump @(answered ? "is-answered" : null)" href="#q-@question.QuestionVersionId" aria-label="第 @number 题，@(answered ? "已答" : "未答")">@number</a>
+                    }
+                </div>
+                <p class="field-hint">绿色编号表示已作答，不代表判分结果。</p>
+                <button type="button" class="btn btn-primary w-full" @onclick="RequestSubmit"><Icon Name="check" />交卷</button>
+            </aside>
+        </div>
+        }
+    }
+</div>
+
+<Modal IsOpen="_submitOpen" Title="确认交卷" OnClose="CloseSubmit">
+    <ChildContent>
+        <p class="exam-confirm-copy">交卷后答案不可修改，系统将立即进行客观题阅卷。当前已答 @AnsweredCount / @_questions.Count() 题，还有 @(_questions.Count() - AnsweredCount) 题未答。</p>
+        @if (AnsweredCount < _questions.Count()) { <Alert Kind="warning" Message="仍有未作答题目。未答题目的成绩将按 0 分处理，请确认是否继续。" /> }
+        <label class="checkbox-row exam-check-row"><input type="checkbox" @bind="_submitAcknowledged" /><span>我已核对答案，确认结束本次考试。</span></label>
+        @if (!string.IsNullOrWhiteSpace(_saveError)) { <Alert Kind="danger" Message="@_saveError" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_submitting" @onclick="CloseSubmit">继续答题</button><button type="button" class="btn btn-primary" disabled="@(_submitting || !_submitAcknowledged || !_detail!.CanSubmit)" @onclick="SubmitAsync">@(_submitting ? "正在交卷…" : "确认交卷")</button></FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public long Id { get; set; }
+
+    private AttemptDetail? _detail;
+    private Dictionary<long, string?> _answers = [];
+    private Dictionary<long, string?> _savedAnswers = [];
+    private HashSet<long> _dirty = [];
+    private Dictionary<long, int> _questionNumbers = [];
+    private List<AttemptQuestionDto> _questions = [];
+    private System.Timers.Timer? _countdownTimer;
+    private System.Timers.Timer? _saveTimer;
+    private SemaphoreSlim _saveGate = new(1, 1);
+    private SemaphoreSlim _recoveryGate = new(1, 1);
+    private CancellationTokenSource _lifetimeCancellation = new();
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<ExamAttempt>? _dotNetRef;
+    private ApiAuditMetadata? _saveMetadata;
+    private ApiAuditMetadata? _submitMetadata;
+    private TimeSpan _remaining;
+    private long _rowVersion;
+    private int _loadVersion;
+    private int _draftGeneration;
+    private int _draftRevision;
+    private int _lastDraftRevision = -1;
+    private int _tickRunning;
+    private bool _authoritativeSync;
+    private volatile bool _disposed;
+    private bool _loading = true;
+    private bool _saveBusy;
+    private bool _submitting;
+    private bool _submitOpen;
+    private bool _submitAcknowledged;
+    private bool _online = true;
+    private bool _jsInitialized;
+    private bool _draftChecked;
+    private bool _deadlineSaveHandled;
+    private DateTime? _savedAt;
+    private string? _loadError;
+    private string? _saveError;
+    private string? _message;
+
+    private string? _draftWarning;
+
+    static ExamAttempt() => ExamAnswers.RunSelfCheck();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _saveTimer = new System.Timers.Timer(30_000);
+        _saveTimer.Elapsed += SaveTimerElapsed;
+        _saveTimer.AutoReset = false;
+        await LoadAsync();
+    }
+
+    private async void SaveTimerElapsed(object? sender, System.Timers.ElapsedEventArgs args)
+    {
+        if (_disposed) return;
+        try { await InvokeAsync(() => SaveAnswersAsync()); }
+        catch (Exception ex) { if (!_disposed) { Logger.LogError(ex, "考生答卷自动保存失败"); await InvokeAsync(() => _saveError = "自动保存失败，请检查连接并手动保存。"); } }
+    }
+
+    private async Task LoadAsync(bool restoreDraft = true)
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null; _saveError = null; _deadlineSaveHandled = false;
+        if (!restoreDraft) _draftChecked = true;
+        try
+        {
+            var detail = await Service.GetDetailAsync(Id);
+            if (_disposed || version != _loadVersion) return;
+            _detail = detail;
+            if (detail is null) { _loadError = "答卷不存在或不属于当前账号。"; return; }
+            _rowVersion = detail.RowVersion;
+            _questions = detail.Paper.Sections.SelectMany(x => x.Questions).ToList();
+            _questionNumbers = _questions.Select((question, index) => (question.QuestionVersionId, Index: index + 1)).ToDictionary(x => x.QuestionVersionId, x => x.Index);
+            _answers = _questions.ToDictionary(x => x.QuestionVersionId, x => x.AnswerJson);
+            _savedAnswers = new Dictionary<long, string?>(_answers);
+            _dirty.Clear(); _saveMetadata = null; _savedAt = null; _draftChecked = !restoreDraft; _draftRevision++;
+            _remaining = detail.DeadlineAt - Clock.UtcNow;
+            if (detail.Status == "InProgress") StartCountdown(); else _countdownTimer?.Stop();
+        }
+        catch (Exception ex) { if (!_disposed && version == _loadVersion) { Logger.LogError(ex, "加载考生答卷失败"); _loadError = "答卷恢复失败，请检查连接后重试。"; } }
+        finally { if (!_disposed && version == _loadVersion) _loading = false; }
+    }
+
+    private void StartCountdown()
+    {
+        if (_countdownTimer is not null) return;
+        _countdownTimer = new System.Timers.Timer(1_000);
+        _countdownTimer.Elapsed += CountdownElapsed;
+        _countdownTimer.Start();
+    }
+
+    private async void CountdownElapsed(object? sender, System.Timers.ElapsedEventArgs args)
+    {
+        if (_disposed || Interlocked.Exchange(ref _tickRunning, 1) != 0) return;
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                if (_disposed || _detail?.Status != "InProgress") { _countdownTimer?.Stop(); return; }
+                _remaining = _detail.DeadlineAt - Clock.UtcNow;
+                if (_remaining <= TimeSpan.Zero && !_deadlineSaveHandled)
+                {
+                    _deadlineSaveHandled = true;
+                    if (_dirty.Count > 0) await SaveAnswersAsync();
+                }
+                if (_remaining <= TimeSpan.FromSeconds(-30))
+                {
+                    if (_dirty.Count > 0 && !await SaveAnswersAsync()) return;
+                    await LoadAuthoritativeAsync();
+                    if (_disposed) return;
+                    if (_detail?.Status == "InProgress") _countdownTimer?.Stop();
+                }
+            });
+        }
+        catch (Exception ex) { if (!_disposed) Logger.LogError(ex, "更新考生倒计时失败"); }
+        finally { Volatile.Write(ref _tickRunning, 0); }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed) return;
+        if (_detail is null || _module is null && !_jsInitialized)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/ExamAttempt.razor.js");
+            if (_disposed) { await _module.DisposeAsync(); return; }
+            _dotNetRef ??= DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("init", Id, _dotNetRef);
+            if (_disposed) return;
+            _jsInitialized = true;
+        }
+        if (_module is null || !_jsInitialized || _disposed || _detail is null) return;
+        if (!_draftChecked)
+        {
+            _draftChecked = true;
+            if (_detail?.Status == "InProgress")
+            {
+                var generation = _draftGeneration;
+                var loadVersion = _loadVersion;
+                var draft = await _module.InvokeAsync<Dictionary<string, string?>>("restoreDraft", Id);
+                if (_disposed || generation != _draftGeneration || loadVersion != _loadVersion) return;
+                var restored = 0;
+                foreach (var item in draft)
+                    if (long.TryParse(item.Key, out var questionId) && _answers.ContainsKey(questionId) && !string.Equals(_answers[questionId], item.Value, StringComparison.Ordinal))
+                    {
+                        _answers[questionId] = item.Value; _dirty.Add(questionId); restored++;
+                    }
+                if (restored > 0)
+                {
+                    _message = $"已从当前标签页恢复 {restored} 道题的未保存答案，正在同步到服务器。";
+                    _draftRevision++;
+                    await SaveAnswersAsync();
+                }
+                else if (draft.Count > 0) { await _module.InvokeVoidAsync("clearDraft", Id); }
+            }
+            else { await _module.InvokeVoidAsync("clearDraft", Id); }
+        }
+        if (_disposed || _authoritativeSync || _draftRevision == _lastDraftRevision) return;
+        _lastDraftRevision = _draftRevision;
+        if (_dirty.Count > 0)
+        {
+            var generation = _draftGeneration;
+            var revision = _draftRevision;
+            var stored = await _module.InvokeAsync<bool>("storeDraft", Id, _answers);
+            if (_disposed || _authoritativeSync || generation != _draftGeneration || revision != _draftRevision) return;
+            _draftWarning = stored ? null : "浏览器标签页备份不可用；服务器自动保存仍有效，但断线前请勿关闭或刷新页面。";
+        }
+        else { await _module.InvokeVoidAsync("clearDraft", Id); _draftWarning = null; }
+    }
+
+    private bool Editable => !_disposed && !_loading && !_authoritativeSync && !_submitting && _detail?.CanSave == true && _remaining > TimeSpan.Zero;
+    private string? Answer(long questionId) => _answers.GetValueOrDefault(questionId);
+    private int QuestionNumber(long questionId) => _questionNumbers.GetValueOrDefault(questionId);
+    private bool IsAnswered(long questionId) => !string.IsNullOrWhiteSpace(Answer(questionId)) && Answer(questionId) != "{}";
+    private int AnsweredCount => _questions.Count(question => IsAnswered(question.QuestionVersionId));
+    private string SaveStatus => _saveBusy ? "正在保存到服务器…" : _dirty.Count > 0 ? $"有 {_dirty.Count} 题等待保存（停止编辑 30 秒后自动保存）" : _savedAt is null ? "已从服务器恢复答案" : $"已保存于 {TimeFormat.Display(_savedAt)}";
+
+    private Task SetSingleAsync(AttemptQuestionDto question, string? label) => SetAnswerAsync(question, ExamAnswers.Single(label));
+    private Task SetTrueFalseAsync(AttemptQuestionDto question, bool value) => SetAnswerAsync(question, ExamAnswers.TrueFalse(value));
+    private Task ToggleMultipleAsync(AttemptQuestionDto question, string label, object? value)
+    {
+        var selected = ExamAnswers.ReadMultiple(Answer(question.QuestionVersionId)).ToHashSet(StringComparer.Ordinal);
+        if (value is bool flag && flag) selected.Add(label); else selected.Remove(label);
+        return SetAnswerAsync(question, selected.Count == 0 ? null : ExamAnswers.Multiple(selected));
+    }
+
+    private Task SetAnswerAsync(AttemptQuestionDto question, string? answer)
+    {
+        if (!Editable || _detail?.Status != "InProgress") return Task.CompletedTask;
+        _answers[question.QuestionVersionId] = answer;
+        if (string.Equals(_savedAnswers.GetValueOrDefault(question.QuestionVersionId), answer, StringComparison.Ordinal)) _dirty.Remove(question.QuestionVersionId); else _dirty.Add(question.QuestionVersionId);
+        _saveError = null; _draftRevision++; _saveMetadata = null;
+        _saveTimer?.Stop(); _saveTimer?.Start();
+        return Task.CompletedTask;
+    }
+
+    private async Task<bool> SaveAnswersAsync()
+    {
+        if (_disposed || _detail?.Status != "InProgress") return false;
+        if (_saveBusy) return false;
+        if (_dirty.Count == 0) { _saveError = null; return true; }
+        var lockTaken = false;
+        try
+        {
+            await _saveGate.WaitAsync(_lifetimeCancellation.Token);
+            lockTaken = true;
+            if (_disposed) return false;
+            if (_dirty.Count == 0) return true;
+            _saveBusy = true; _saveError = null;
+            var pending = _dirty.Select(id => new SaveAnswerItemInput(id, _answers.GetValueOrDefault(id))).ToArray();
+            _saveMetadata ??= ExamAudit.Create("exam-attempt-save", Id);
+            var result = await Service.SaveAnswersAsync(Id, new SaveAnswersInput { RowVersion = _rowVersion, Answers = pending }, _saveMetadata);
+            if (_disposed) return false;
+            if (!result.IsSuccess) { _saveError = result.Error ?? "答案保存失败，请检查连接后重试。"; return false; }
+            _rowVersion++; _saveMetadata = null; _savedAt = Clock.UtcNow;
+            foreach (var item in pending)
+            {
+                _savedAnswers[item.QuestionVersionId] = item.AnswerJson;
+                if (string.Equals(_answers.GetValueOrDefault(item.QuestionVersionId), item.AnswerJson, StringComparison.Ordinal)) _dirty.Remove(item.QuestionVersionId);
+            }
+            _draftRevision++; _message = null;
+            return true;
+        }
+        catch (OperationCanceledException) when (_disposed) { return false; }
+        catch (Exception ex) { if (!_disposed) { Logger.LogError(ex, "保存考生答案失败"); _saveError = "答案保存失败。未保存内容保留在当前标签页，请恢复连接后重试。"; } return false; }
+        finally { if (lockTaken) _saveGate.Release(); if (!_disposed) _saveBusy = false; }
+    }
+
+    [JSInvokable]
+    public async Task ConnectionChanged(bool online)
+    {
+        if (_disposed) return;
+        var wasOnline = _online;
+        _online = online;
+        if (!online) { _message = null; StateHasChanged(); return; }
+        if (wasOnline || !_draftChecked || _loading) return;
+        await RecoverConnectionAsync();
+    }
+
+    [JSInvokable]
+    public async Task PageHidden()
+    {
+        if (!_disposed && _dirty.Count > 0) await SaveAnswersAsync();
+    }
+
+    private async Task RecoverConnectionAsync()
+    {
+        var lockTaken = false;
+        try
+        {
+            await _recoveryGate.WaitAsync(_lifetimeCancellation.Token);
+            lockTaken = true;
+            if (_disposed) return;
+            if (_dirty.Count > 0 && !await SaveAnswersAsync()) return;
+            if (_disposed) return;
+            await LoadAuthoritativeAsync("连接已恢复，已按服务器答卷重新同步。");
+        }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        finally { if (lockTaken) _recoveryGate.Release(); }
+    }
+
+    private async Task ResyncAsync()
+    {
+        if (_disposed || _saveBusy || _submitting) return;
+        var lockTaken = false;
+        try
+        {
+            await _recoveryGate.WaitAsync(_lifetimeCancellation.Token);
+            lockTaken = true;
+            if (_disposed || _saveBusy || _submitting) return;
+            await LoadAuthoritativeAsync("已按服务器答卷重新同步。");
+        }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        finally { if (lockTaken) _recoveryGate.Release(); }
+    }
+
+    private async Task LoadAuthoritativeAsync(string? message = null)
+    {
+        if (_disposed) return;
+        var generation = ++_draftGeneration;
+        _draftChecked = true;
+        _authoritativeSync = true;
+        _loading = true;
+        _dirty.Clear(); _draftRevision++;
+        try
+        {
+            if (_module is not null)
+            {
+                try { await _module.InvokeVoidAsync("clearDraft", Id); }
+                catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "重新同步前清除浏览器草稿失败，连接已断开"); }
+            }
+            if (_disposed) return;
+            await LoadAsync(restoreDraft: false);
+            if (!_disposed && generation == _draftGeneration && message is not null) _message = message;
+        }
+        finally { if (generation == _draftGeneration) _authoritativeSync = false; }
+    }
+
+    private void RequestSubmit()
+    {
+        if (_submitting || _questions.Count == 0 || _detail?.CanSubmit != true) return;
+        _submitOpen = true; _submitAcknowledged = false; _saveError = null;
+    }
+    private void CloseSubmit() { if (!_submitting) _submitOpen = false; }
+
+    private async Task SubmitAsync()
+    {
+        if (_disposed || _submitting || _questions.Count == 0 || !_submitAcknowledged || _detail?.CanSubmit != true) return;
+        if (_dirty.Count > 0 && !await SaveAnswersAsync()) return;
+        _submitting = true; _saveError = null;
+        try
+        {
+            _submitMetadata ??= ExamAudit.Create("exam-attempt-submit", Id);
+            var result = await Service.SubmitAsync(Id, new SubmitAttemptInput(_rowVersion), _submitMetadata);
+            if (_disposed) return;
+            if (!result.IsSuccess) { _saveError = result.Error ?? "交卷失败，请检查连接后重试。"; return; }
+            _draftGeneration++; _draftChecked = true;
+            if (_module is not null)
+            {
+                try { await _module.InvokeVoidAsync("clearDraft", Id); }
+                catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "交卷后清除浏览器草稿失败，连接已断开"); }
+            }
+            Navigation.NavigateTo($"/exams/results/{Id}", forceLoad: true);
+        }
+        catch (Exception ex) { if (!_disposed) { Logger.LogError(ex, "考生交卷失败"); _saveError = "交卷失败。请保留当前页面并重试，不要重复开启新考试。"; } }
+        finally { if (!_disposed) _submitting = false; }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _loadVersion++;
+        _draftGeneration++;
+        _lifetimeCancellation.Cancel();
+        _countdownTimer?.Stop(); _countdownTimer?.Dispose();
+        _saveTimer?.Stop(); _saveTimer?.Dispose();
+        await _recoveryGate.WaitAsync(); _recoveryGate.Release();
+        await _saveGate.WaitAsync(); _saveGate.Release();
+        _saveGate.Dispose(); _recoveryGate.Dispose();
+        try
+        {
+            if (_module is not null) await _module.InvokeVoidAsync("destroy", Id);
+        }
+        catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "释放考生答卷前端资源失败，连接已断开"); _module = null; }
+        if (_module is not null)
+        {
+            try { await _module.DisposeAsync(); }
+            catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "释放考生答卷前端模块失败，连接已断开"); }
+        }
+        _dotNetRef?.Dispose();
+        _lifetimeCancellation.Dispose();
+    }
+}

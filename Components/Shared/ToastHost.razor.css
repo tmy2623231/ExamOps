@@ -1,0 +1,91 @@
+/* Lucian UX/UI Prompt #070 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#070 */
+.u070-host {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: var(--z-toast);
+  width: min(350px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.u070-zone {
+  position: relative;
+  width: 100%;
+  height: 0;
+  outline: none;
+  pointer-events: none;
+}
+::deep .u070-t {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px 12px 12px 14px;
+  border-radius: 16px;
+  background: var(--ux-surface);
+  box-shadow: 0 0 0 1px var(--ux-line), 0 16px 30px -16px var(--ux-shadow-strong);
+  transform-origin: 50% 100%;
+  transform: translate(var(--dx, 0px), var(--y, 0px)) scale(var(--s, 1));
+  opacity: var(--o, 1);
+  transition: transform .5s var(--ux-spring), opacity .35s;
+  touch-action: pan-y;
+  user-select: none;
+  pointer-events: auto;
+}
+::deep .u070-t.drag { transition: none; }
+::deep .u070-t.enter { transform: translateY(72px) scale(.92); opacity: 0; }
+::deep .u070-t.leave { transform: translate(var(--dx, 0px), var(--y, 0px)) scale(var(--s, 1)); opacity: 0; pointer-events: none; }
+::deep .u070-t.leave.side { transform: translate(calc(var(--dir, 1) * 380px), var(--y, 0px)) rotate(calc(var(--dir, 1) * 8deg)); }
+::deep .u070-t > * { transition: opacity .25s; }
+::deep .u070-t.back > * { opacity: 0; }
+::deep .u070-ic {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--c) 15%, transparent);
+  color: var(--c);
+}
+::deep .u070-ic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+::deep .u070-ic i { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid currentColor; border-right-color: transparent; animation: u070-spin .7s linear infinite; }
+@keyframes u070-spin { to { transform: rotate(360deg); } }
+::deep .u070-tx { flex: 1; min-width: 0; }
+::deep .u070-tx b { display: block; font-size: 13.5px; font-weight: 700; color: var(--ux-ink); }
+::deep .u070-tx small { display: block; margin-top: 2px; font-size: 12px; color: var(--ux-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+::deep .u070-x {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: none;
+  color: var(--ux-ink-3);
+  cursor: pointer;
+}
+::deep .u070-x:hover { background: var(--ux-surface-2); color: var(--ux-ink); }
+::deep .u070-x svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+::deep .u070-bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--c);
+  opacity: .55;
+  transform-origin: 0 50%;
+  transform: scaleX(var(--left, 1));
+}
+.u070-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (max-width: 560px) {
+  .u070-host { right: 12px; left: 12px; bottom: 12px; width: auto; }
+}

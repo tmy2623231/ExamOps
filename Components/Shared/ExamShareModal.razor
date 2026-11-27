@@ -1,0 +1,57 @@
+@using ExamOps.Infra.Ui
+@inject NavigationManager Navigation
+@inject ToastService Toasts
+@inject IJSRuntime JS
+
+<Modal IsOpen="IsOpen" Title="分享考试入口" OnClose="OnClose">
+    <ChildContent>
+        <div class="share-box">
+            <p class="share-title"><strong>@TaskTitle</strong></p>
+            <p class="field-hint">考生扫码或打开链接，登录后即可直达本场考试准备页。</p>
+            <div class="share-qr" aria-label="考试直达二维码">
+                @((MarkupString)_qrSvg)
+            </div>
+            <div class="share-url-row">
+                <input class="input" type="text" readonly value="@_shareUrl" aria-label="考试直达链接" />
+                <button type="button" class="btn btn-primary" @onclick="CopyLinkAsync">复制链接</button>
+            </div>
+        </div>
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="btn btn-secondary" @onclick="OnClose">关闭</button>
+    </FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public long TaskId { get; set; }
+    [Parameter] public string TaskTitle { get; set; } = "";
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private string _shareUrl = "";
+    private string _qrSvg = "";
+    private long _lastTaskId;
+
+    protected override void OnParametersSet()
+    {
+        if (TaskId > 0 && TaskId != _lastTaskId)
+        {
+            _lastTaskId = TaskId;
+            _shareUrl = $"{Navigation.BaseUri.TrimEnd('/')}/exams/my?taskId={TaskId}";
+            _qrSvg = QrSvgGenerator.GenerateSvg(_shareUrl);
+        }
+    }
+
+    private async Task CopyLinkAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _shareUrl);
+            await Toasts.SuccessAsync("开考链接已复制", _shareUrl);
+        }
+        catch
+        {
+            await Toasts.InfoAsync("请手动复制输入框内的链接", _shareUrl);
+        }
+    }
+}

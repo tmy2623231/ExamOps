@@ -1,0 +1,365 @@
+@page "/content/questions/import"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.QuestionImport)]
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Components.Forms
+@inject QuestionService Service
+@inject DataScopeService Scope
+@inject NavigationManager Navigation
+@inject IHttpContextAccessor HttpContextAccessor
+@inject IAntiforgery Antiforgery
+@inject IJSRuntime JS
+@inject ILogger<QuestionImport> Logger
+@implements IAsyncDisposable
+
+<PageHeader Title="批量导入题目" Description="下载模板、上传 XLSX 并检查逐行结果；预览不会写入题目。">
+    <Actions><a class="btn btn-secondary" href="/content/banks"><Icon Name="arrow-left" />返回题库</a></Actions>
+</PageHeader>
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载可导入题库…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadBanksAsync">重新加载题库</button></section>
+}
+else if (_banks.Count == 0)
+{
+    <section class="card"><EmptyState Title="没有可导入的题库" Description="当前账号没有启用题库的导入权限，请联系管理员。" IconName="grid" /></section>
+}
+else
+{
+    <div class="import-stack">
+        <section class="card import-card" aria-labelledby="import-setup-title">
+            <header class="card-header"><div><h2 id="import-setup-title" class="card-title">1. 选择题库与文件</h2><p class="field-hint">仅支持 .xlsx，文件不能超过 10 MiB。</p></div><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="DownloadTemplateAsync">@(_downloadingTemplate ? "正在下载…" : _templateError is null ? "下载 XLSX 模板" : "重试下载模板")</button></header>
+            <div class="card-body">
+                @if (_templateError is not null) { <Alert Kind="danger" Message="@_templateError" /> }
+                <div class="form-grid">
+                    <div class="field"><label for="import-bank">目标题库</label><select id="import-bank" class="select" @bind="_bankId" @bind:after="BankChanged" disabled="@_busy"><option value="0">请选择题库</option>@foreach (var bank in _banks) { <option value="@bank.Id">@bank.Name</option> }</select><span class="field-hint">@(_banks.FirstOrDefault(x => x.Id == _bankId) is { } selectedBank ? $"所属部门：{selectedBank.DepartmentName}" : "请选择当前账号有导入权限的启用题库。")</span></div>
+                    <div class="field"><label for="import-mode">导入模式</label><select id="import-mode" class="select" @bind="_mode" @bind:after="ModeChanged" disabled="@_busy"><option value="AllOrNothing">全部成功（AllOrNothing）</option><option value="SkipInvalid">跳过错误行（SkipInvalid）</option></select><span class="field-hint">@(_mode == "AllOrNothing" ? "任一行写入失败则整批回滚，不覆盖已有题目。" : "导入有效行并跳过错误行，不覆盖重复编码。")</span></div>
+                    <div class="field field-full"><label for="import-file">题目文件</label><InputFile id="import-file" class="input" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" OnChange="FileSelectedAsync" disabled="@_busy" @key="_fileInputKey" />@if (_file is not null) { <div class="import-file-row"><span class="field-hint">已选择：@_file.Name（@FormatFileSize(_file.Size)）</span><button type="button" class="btn btn-ghost btn-sm" disabled="@_busy" @onclick="ClearFile">移除文件</button></div> }</div>
+                </div>
+                @if (_fileError is not null) { <Alert Kind="danger" Message="@_fileError" /> }
+                @if (_previewError is not null) { <Alert Kind="danger" Message="@_previewError" /> }
+                <div class="import-actions"><button type="button" class="btn btn-primary" disabled="@(!CanPreview)" @onclick="PreviewAsync">@(_previewing ? "正在生成预览…" : _previewError is null ? "生成预览" : "重试生成预览")</button><span class="field-hint">生成预览后才可确认导入。</span></div>
+            </div>
+        </section>
+
+        @if (_preview is { } preview)
+        {
+            <section class="card import-card" aria-labelledby="import-preview-title">
+                <header class="card-header"><div><h2 id="import-preview-title" class="card-title">2. 检查预览与导入</h2><p class="field-hint">批次 #@preview.BatchId · @(_detail?.FileName ?? _file?.Name) · @ModeLabel(_detail?.Mode ?? _mode)</p></div><span class="badge @StatusClass(preview.Status)">@StatusLabel(preview.Status)</span></header>
+                <div class="card-body">
+                    @if (preview.Replayed) { <Alert Kind="info" Message="检测到相同文件，已恢复此前批次；不会重复创建预览，也不会自动写入题目。" /> }
+                    @if (_result is not null) { <Alert Kind="@(_result.FailedRows == 0 ? "success" : "warning")" Message="@(_result.FailedRows == 0 ? $"导入结果：共写入 {_result.ImportedRows} 行；终态重复确认不会重复写入。" : $"导入结果：写入 {_result.ImportedRows} 行，失败 {_result.FailedRows} 行，可下载错误报告。")" /> }
+                    <dl class="import-stats">
+                        <div><dt>总行数</dt><dd>@preview.TotalRows</dd></div><div><dt>可导入（含警告）</dt><dd>@preview.ValidRows</dd></div><div><dt>错误行</dt><dd>@preview.InvalidRows</dd></div><div><dt>警告行</dt><dd>@preview.WarningRows</dd></div><div><dt>重复编码行</dt><dd>@preview.DuplicateRows</dd></div><div><dt>已导入</dt><dd>@preview.ImportedRows</dd></div><div><dt>失败</dt><dd>@preview.FailedRows</dd></div><div><dt>已排除</dt><dd>@preview.ExcludedRows</dd></div>
+                    </dl>
+                    @if (!IsTerminal(preview.Status) && (_detail?.Mode ?? _mode) == "AllOrNothing" && preview.InvalidRows > 0) { <Alert Kind="warning" Message="全部成功模式存在错误行，当前不能确认导入；请修正文件，或改用跳过错误行后重新预览。" /> }
+                    @if (!IsTerminal(preview.Status) && RowsToImport == 0) { <Alert Kind="warning" Message="当前没有可导入的行，请检查文件或调整警告行排除选项。" /> }
+                    <div class="import-section-heading"><h3>行级明细</h3><span class="field-hint">仅警告行可排除；错误行不会写入。</span></div>
+                    @if (_rowsLoading)
+                    {
+                        <div class="loading-state compact" role="status"><span class="spinner" aria-hidden="true"></span>正在加载行级明细…</div>
+                    }
+                    else if (_rowsError is not null)
+                    {
+                        <Alert Kind="danger" Message="@_rowsError" /><button type="button" class="btn btn-secondary" @onclick="LoadRowsAsync">重试行明细</button>
+                    }
+                    else if (_detail is null || _detail.Rows.Count == 0)
+                    {
+                        <EmptyState Title="没有行级明细" Description="文件中没有可预览的数据行。" IconName="grid" />
+                    }
+                    else
+                    {
+                        <div class="table-wrap import-table-wrap" role="region" aria-label="导入行明细，可横向滚动" tabindex="0">
+                            <table class="table import-table">
+                                <caption class="sr-only">导入行号、状态、编码、题干与答案、错误、警告及排除选项</caption>
+                                <thead><tr><th scope="col">行号</th><th scope="col">状态</th><th scope="col">编码</th><th scope="col">题干 / 答案</th><th scope="col">错误</th><th scope="col">警告</th><th scope="col">排除警告行</th></tr></thead>
+                                <tbody>
+                                @foreach (var row in _detail.Rows)
+                                {
+                                    <tr>
+                                        <td>@row.RowNo</td><td><span class="badge @StatusClass(row.Status)">@StatusLabel(row.Status)</span></td><td>@(row.ExternalCode ?? "—")</td>
+                                        <td><span class="import-cell-primary">@(row.Stem ?? "终态不保留题干")</span><small class="cell-secondary">答案：@(row.AnswerSummary ?? "—")</small></td>
+                                        <td class="import-row-errors">@(string.IsNullOrWhiteSpace(row.Errors) ? "—" : row.Errors)</td><td class="import-row-warnings">@(string.IsNullOrWhiteSpace(row.Warnings) ? "—" : row.Warnings)</td>
+                                        <td>@if (row.Status == "Warning" && !IsTerminal(preview.Status)) { <label class="import-exclude"><input type="checkbox" checked="@_excludedWarningRows.Contains(row.RowNo)" @onchange="() => ToggleWarningExclusion(row.RowNo)" disabled="@_busy" /><span>排除此行</span></label> } else { <span class="field-hint">—</span> }</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                        <Pagination TotalCount="_detail.TotalCount" PageIndex="_detail.PageIndex" PageSize="_detail.PageSize" PageChanged="ChangeRowPageAsync" />
+                    }
+                    @if (_reportError is not null) { <Alert Kind="danger" Message="@_reportError" /> }
+                    <div class="import-actions import-actions-divider">
+                        <span class="field-hint">@(!IsTerminal(preview.Status) ? $"将导入 {RowsToImport} 行，已选择排除 {_excludedWarningRows.Count} 条警告行。" : "终态批次可重复确认，接口将返回原结果，不会重复写入。")</span>
+                        <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="DownloadReportAsync">@(_downloadingReport ? "正在下载…" : _reportError is null ? "下载错误报告" : "重试下载报告")</button>
+                        <button type="button" class="btn btn-primary" disabled="@(!CanConfirm)" @onclick="RequestConfirm">@(IsTerminal(preview.Status) ? "重复确认（幂等）" : "确认导入")</button>
+                    </div>
+                </div>
+            </section>
+        }
+    </div>
+}
+
+<Modal IsOpen="_confirmOpen" Title="@(_confirmWasTerminal ? "重复确认导入" : "确认导入题目")" OnClose="CloseConfirm">
+    <ChildContent>
+        <p class="import-confirm-copy">将向“@(_banks.FirstOrDefault(x => x.Id == _bankId)?.Name ?? "当前题库")”@(_confirmWasTerminal ? "再次提交当前终态批次；不会重复写入。" : $"导入 {RowsToImport} 行，已排除 {_excludedWarningRows.Count} 条警告行。")</p>
+        <p class="field-hint">@(_mode == "AllOrNothing" ? "全部成功模式：任一行写入失败，整批回滚。" : "跳过错误行模式：写入有效行，错误行不导入。") 已有题目不会被覆盖，确认后立即执行。</p>
+        @if (_confirmError is not null) { <Alert Kind="danger" Message="@_confirmError" /> }
+        @if (_confirmErrorCode is "CONCURRENCY_CONFLICT" or "INVALID_STATE" or "MODE_MISMATCH") { <button type="button" class="btn btn-secondary" @onclick="RefreshBatchAsync">刷新批次</button> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_confirming" @onclick="CloseConfirm">取消</button><button type="button" class="btn btn-primary" disabled="@(_confirming || _preview is null)" @onclick="ConfirmAsync">@(_confirming ? "正在导入…" : _confirmWasTerminal ? "再次确认" : "确认导入")</button></FooterContent>
+</Modal>
+
+@code {
+    [SupplyParameterFromQuery(Name = "bankId")] public long? BankId { get; set; }
+    private const long MaxFileSize = 10 * 1024 * 1024;
+    private const int RowsPageSize = 20;
+    private IReadOnlyList<QuestionBankRow> _banks = [];
+    private IBrowserFile? _file;
+    private QuestionImportPreview? _preview;
+    private QuestionImportPreview? _result;
+    private QuestionImportBatchDetail? _detail;
+    private HashSet<int> _excludedWarningRows = [];
+    private long _bankId;
+    private string _mode = "AllOrNothing";
+    private int _fileInputKey;
+    private int _rowPage = 1;
+    private bool _loading = true;
+    private bool _downloadingTemplate;
+    private bool _previewing;
+    private bool _rowsLoading;
+    private bool _confirming;
+    private bool _downloadingReport;
+    private bool _confirmOpen;
+    private bool _confirmWasTerminal;
+    private string? _loadError;
+    private string? _templateError;
+    private string? _fileError;
+    private string? _previewError;
+    private string? _rowsError;
+    private string? _reportError;
+    private string? _confirmError;
+    private string? _confirmErrorCode;
+    private string? _message;
+    private string _messageKind = "info";
+    private string? _cookieHeader;
+    private IJSObjectReference? _module;
+    private bool _busy => _downloadingTemplate || _previewing || _rowsLoading || _confirming || _downloadingReport;
+    private int RowsToImport => _preview is null ? 0 : Math.Max(0, _preview.ValidRows - _excludedWarningRows.Count);
+    private bool CanPreview => !_busy && _bankId > 0 && _file is not null && _preview is null;
+    private bool CanConfirm => !_busy && _preview is not null && (IsTerminal(_preview.Status) || (_detail is not null && _rowsError is null && RowsToImport > 0 && !(_mode == "AllOrNothing" && _preview.InvalidRows > 0)));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cookieHeader = HttpContextAccessor.HttpContext?.Request.Headers.Cookie.ToString();
+        await LoadBanksAsync();
+    }
+
+    private async Task LoadBanksAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            var banks = await Service.GetBanksAsync();
+            var allowed = new List<QuestionBankRow>();
+            foreach (var bank in banks.Where(x => x.Status == "Active"))
+                if (await Scope.CanAccessDepartmentAsync(bank.DepartmentId, Permissions.QuestionImport)) allowed.Add(bank);
+            _banks = allowed;
+            _bankId = BankId.HasValue && allowed.Any(x => x.Id == BankId) ? BankId.Value : allowed.FirstOrDefault()?.Id ?? 0;
+            if (BankId.HasValue && _bankId != BankId) Show("链接中的题库不可导入，已切换到可用题库。", "warning");
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载可导入题库失败"); _loadError = "题库加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try { _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/QuestionImport.razor.js"); }
+        catch (JSException ex) { Logger.LogError(ex, "初始化下载组件失败"); }
+    }
+
+    private void BankChanged() => ResetPreviewState();
+    private void ModeChanged() => ResetPreviewState();
+    private void ResetPreviewState()
+    {
+        _preview = null; _result = null; _detail = null; _excludedWarningRows.Clear();
+        _previewError = null; _rowsError = null; _reportError = null; _confirmError = null; _confirmErrorCode = null; _rowPage = 1;
+    }
+    private Task FileSelectedAsync(InputFileChangeEventArgs args)
+    {
+        if (_busy) return Task.CompletedTask;
+        _fileError = null;
+        if (args.FileCount != 1 || args.File is not { } file) { _file = null; _fileError = "请选择一个文件。"; _fileInputKey++; ResetPreviewState(); return Task.CompletedTask; }
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) || file.Size == 0 || file.Size > MaxFileSize)
+        {
+            _file = null; _fileError = file.Size > MaxFileSize ? "文件不能超过 10 MiB。" : "请选择非空的 .xlsx 文件。"; _fileInputKey++; ResetPreviewState(); return Task.CompletedTask;
+        }
+        _file = file; ResetPreviewState();
+        return Task.CompletedTask;
+    }
+    private void ClearFile() { _file = null; _fileError = null; _fileInputKey++; ResetPreviewState(); }
+
+    private async Task DownloadTemplateAsync()
+    {
+        if (_busy) return;
+        _downloadingTemplate = true; _templateError = null;
+        try
+        {
+            var result = await DownloadFileAsync("api/question-banks/template", "question-import-template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            if (result.Success) Show("模板下载已开始。", "success"); else _templateError = result.Error;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "下载题目导入模板失败"); _templateError = "模板下载失败，请稍后重试。"; }
+        finally { _downloadingTemplate = false; }
+    }
+
+    private async Task PreviewAsync()
+    {
+        if (!CanPreview || _file is not { } file) return;
+        _previewing = true; _previewError = null;
+        try
+        {
+            using var client = CreateClient();
+            using var request = CreateRequest(HttpMethod.Post, $"api/question-banks/{_bankId}/imports/preview");
+            using var content = new MultipartFormDataContent();
+            await using var stream = file.OpenReadStream();
+            using var part = new StreamContent(stream);
+            part.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            content.Add(part, "file", file.Name); content.Add(new StringContent(_mode), "mode"); request.Content = content;
+            using var response = await client.SendAsync(request);
+            var envelope = await ReadEnvelopeAsync<QuestionImportPreview>(response);
+            if (envelope is null || !envelope.Success || envelope.Data is null) { _previewError = envelope?.Error ?? "预览失败，请稍后重试。"; return; }
+            _preview = envelope.Data; _rowPage = 1; _excludedWarningRows.Clear();
+            _result = IsTerminal(_preview.Status) ? _preview : null; _confirmWasTerminal = _result is not null;
+            Show(envelope.Data.Replayed ? "已恢复此前导入批次，请检查结果。" : "预览已生成，尚未写入任何题目。", envelope.Data.Replayed ? "info" : "success");
+            await LoadRowsAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "生成题目导入预览失败"); _previewError = "预览失败，请检查文件后重试。"; }
+        finally { _previewing = false; }
+    }
+
+    private async Task LoadRowsAsync()
+    {
+        if (_preview is null || _rowsLoading) return;
+        _rowsLoading = true; _rowsError = null;
+        try
+        {
+            using var client = CreateClient(); using var request = CreateRequest(HttpMethod.Get, $"api/imports/{_preview.BatchId}?pageIndex={_rowPage}&pageSize={RowsPageSize}");
+            using var response = await client.SendAsync(request); var envelope = await ReadEnvelopeAsync<QuestionImportBatchDetail>(response);
+            if (envelope is null || !envelope.Success || envelope.Data is null) { _rowsError = envelope?.Error ?? "行级明细加载失败。"; return; }
+            _detail = envelope.Data; _preview = envelope.Data.Preview; _mode = envelope.Data.Mode;
+            if (IsTerminal(_preview.Status)) { _result = _preview; _excludedWarningRows.Clear(); }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载导入行级明细失败"); _rowsError = "行级明细加载失败，请稍后重试。"; }
+        finally { _rowsLoading = false; }
+    }
+
+    private async Task ChangeRowPageAsync(int page) { _rowPage = page; await LoadRowsAsync(); }
+    private void ToggleWarningExclusion(int rowNo) { if (_excludedWarningRows.Remove(rowNo)) return; _excludedWarningRows.Add(rowNo); }
+
+    private void RequestConfirm()
+    {
+        if (!CanConfirm || _preview is null) return;
+        _confirmWasTerminal = IsTerminal(_preview.Status); _confirmError = null; _confirmErrorCode = null; _confirmOpen = true;
+    }
+    private void CloseConfirm() { if (!_confirming) _confirmOpen = false; }
+
+    private async Task ConfirmAsync()
+    {
+        if (_confirming || _preview is null) return;
+        _confirming = true; _confirmError = null; _confirmErrorCode = null;
+        try
+        {
+            var input = new ImportConfirmInput(_preview.BatchId, _mode, _preview.RowVersion, _excludedWarningRows.Order().ToArray());
+            using var client = CreateClient(); using var request = CreateRequest(HttpMethod.Post, $"api/question-banks/{_bankId}/imports"); request.Content = JsonContent.Create(input);
+            using var response = await client.SendAsync(request); var envelope = await ReadEnvelopeAsync<QuestionImportPreview>(response);
+            if (envelope is null || !envelope.Success || envelope.Data is null) { _confirmError = envelope?.Error ?? "导入失败，请稍后重试。"; _confirmErrorCode = envelope?.Code; return; }
+            _preview = envelope.Data; _result = envelope.Data; _excludedWarningRows.Clear(); _confirmOpen = false; _rowPage = 1;
+            Show(_confirmWasTerminal ? "重复确认已返回原结果，未重复导入。" : $"导入结束：成功 {envelope.Data.ImportedRows} 行，失败 {envelope.Data.FailedRows} 行。", envelope.Data.FailedRows == 0 ? "success" : "warning");
+            await LoadRowsAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "确认题目导入失败"); _confirmError = "导入失败，请稍后重试。"; }
+        finally { _confirming = false; }
+    }
+
+    private async Task RefreshBatchAsync()
+    {
+        if (_preview is null) return;
+        _rowPage = 1; _confirmError = null; _confirmErrorCode = null;
+        await LoadRowsAsync();
+        if (_rowsError is null) { _confirmOpen = false; Show("批次状态已刷新。", "info"); }
+        else _confirmError = "批次刷新失败，请稍后重试。";
+    }
+
+    private async Task DownloadReportAsync()
+    {
+        if (_busy || _preview is null) return;
+        _downloadingReport = true; _reportError = null;
+        try
+        {
+            var result = await DownloadFileAsync($"api/imports/{_preview.BatchId}/error-report", $"题目导入错误-{_preview.BatchId}.csv", "text/csv");
+            if (result.Success) Show("错误报告下载已开始。", "success"); else _reportError = result.Error;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "下载导入错误报告失败"); _reportError = "错误报告下载失败，请稍后重试。"; }
+        finally { _downloadingReport = false; }
+    }
+
+    private HttpClient CreateClient() => new() { BaseAddress = new Uri(Navigation.BaseUri), Timeout = TimeSpan.FromMinutes(2) };
+    private HttpRequestMessage CreateRequest(HttpMethod method, string url)
+    {
+        var request = new HttpRequestMessage(method, url);
+        var cookie = _cookieHeader ?? HttpContextAccessor.HttpContext?.Request.Headers.Cookie.ToString();
+        if (!string.IsNullOrWhiteSpace(cookie)) request.Headers.Add("Cookie", cookie);
+        if (HttpContextAccessor.HttpContext is { } context)
+        {
+            var tokens = Antiforgery.GetAndStoreTokens(context);
+            if (!string.IsNullOrWhiteSpace(tokens.RequestToken))
+                request.Headers.Add("RequestVerificationToken", tokens.RequestToken);
+        }
+        return request;
+    }
+    private static async Task<ApiEnvelope<T>?> ReadEnvelopeAsync<T>(HttpResponseMessage response)
+    {
+        var envelope = await response.Content.ReadFromJsonAsync<ApiEnvelope<T>>();
+        if (envelope is null) throw new InvalidDataException("接口响应为空。");
+        if (!response.IsSuccessStatusCode && envelope.Success) throw new HttpRequestException($"接口返回异常状态 {(int)response.StatusCode}。");
+        return envelope;
+    }
+    private async Task<DownloadOutcome> DownloadFileAsync(string url, string fileName, string contentType)
+    {
+        using var client = CreateClient(); using var request = CreateRequest(HttpMethod.Get, url); using var response = await client.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var envelope = await ReadEnvelopeAsync<JsonElement>(response);
+            return new(false, envelope?.Error ?? "下载失败，请稍后重试。");
+        }
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/QuestionImport.razor.js");
+        await _module.InvokeVoidAsync("downloadBase64", fileName, contentType, Convert.ToBase64String(bytes));
+        return new(true, null);
+    }
+
+    private static bool IsTerminal(string status) => status is "Completed" or "PartiallyFailed" or "Failed";
+    private static string ModeLabel(string mode) => mode == "AllOrNothing" ? "全部成功" : "跳过错误行";
+    private static string StatusLabel(string status) => status switch { "Previewed" => "待确认", "Importing" => "导入中", "Valid" => "有效", "Warning" => "警告", "Invalid" => "错误", "Imported" => "已导入", "Excluded" => "已排除", "Completed" => "已完成", "PartiallyFailed" => "部分失败", "Failed" => "失败", _ => status };
+    private static string StatusClass(string status) => status switch { "Warning" or "PartiallyFailed" => "badge-warning", "Invalid" or "Failed" => "badge-danger", "Valid" or "Imported" or "Completed" => "badge-success", "Previewed" or "Importing" => "badge-info", _ => "badge-neutral" };
+    private static string FormatFileSize(long size) => size < 1024 * 1024 ? $"{size / 1024d:0} KB" : $"{size / 1024d / 1024:0.00} MiB";
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { if (_module is not null) await _module.DisposeAsync(); }
+        catch (JSDisconnectedException) { _module = null; }
+    }
+
+    private sealed record ApiEnvelope<T>([property: JsonPropertyName("ok")] bool Success, T? Data, string? Error, string? Code, string TraceId);
+    private sealed record DownloadOutcome(bool Success, string? Error);
+}

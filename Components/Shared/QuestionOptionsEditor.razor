@@ -1,0 +1,53 @@
+<fieldset class="question-options" disabled="@Disabled">
+    <legend>选项与标准答案</legend>
+    <p class="field-hint">@OptionsHint</p>
+    <div class="question-options-list">
+        @foreach (var option in Options)
+        {
+            <div class="question-option @(option.IsCorrect ? "is-correct" : null)">
+                <div class="question-option-answer">
+                    @if (Type == "MultipleChoice")
+                    {
+                        <input id="@(_id)-@option.Label-correct" type="checkbox" aria-label="将选项 @option.Label 设为正确选项" checked="@option.IsCorrect" @onchange="e => CorrectChanged.InvokeAsync(option)" />
+                    }
+                    else
+                    {
+                        <input id="@(_id)-@option.Label-correct" name="@_id-answer" type="radio" aria-label="将选项 @option.Label 设为正确答案" checked="@option.IsCorrect" @onchange="e => CorrectChanged.InvokeAsync(option)" />
+                    }
+                    <label for="@(_id)-@option.Label-correct">@option.Label</label>
+                </div>
+                <div class="field question-option-content">
+                    <label class="sr-only" for="@(_id)-@option.Label-content">选项 @option.Label 内容</label>
+                    <textarea id="@(_id)-@option.Label-content" rows="2" maxlength="2000" value="@option.Content" @onchange="e => option.Content = e.Value?.ToString() ?? string.Empty" disabled="@(Type == "TrueFalse")"></textarea>
+                </div>
+                <div class="question-option-state">
+                    @if (option.IsCorrect) { <span class="badge badge-success">正确项</span> }
+                    @if (Type != "TrueFalse")
+                    {
+                        <button type="button" class="btn btn-ghost btn-sm" aria-label="删除选项 @option.Label" disabled="@(Options.Count <= 2)" @onclick="() => RemoveChanged.InvokeAsync(option)"><Icon Name="close" />删除</button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+    @if (Type != "TrueFalse")
+    {
+        <button type="button" class="btn btn-secondary" disabled="@(Options.Count >= 6)" @onclick="AddChanged"><Icon Name="plus" />添加选项</button>
+    }
+</fieldset>
+
+@code {
+    private readonly string _id = $"question-options-{Guid.NewGuid():N}";
+    [Parameter] public string Type { get; set; } = "SingleChoice";
+    [Parameter] public IReadOnlyList<QuestionOptionEdit> Options { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<QuestionOptionEdit> CorrectChanged { get; set; }
+    [Parameter] public EventCallback<QuestionOptionEdit> RemoveChanged { get; set; }
+    [Parameter] public EventCallback AddChanged { get; set; }
+    private string OptionsHint => Type switch
+    {
+        "TrueFalse" => "判断题固定为 A 正确、B 错误，答案与正确项自动保持一致。",
+        "SingleChoice" => "选择题支持 2–6 个选项。单选必须且只能设置一个正确项。",
+        _ => "选择题支持 2–6 个选项。多选至少设置两个正确项。"
+    };
+}

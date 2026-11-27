@@ -1,0 +1,80 @@
+@rendermode InteractiveServer
+@using System.Security.Claims
+@using ExamOps.DAL.Repositories
+@using ExamOps.Infra.Auth
+@inject AuthenticationStateProvider AuthStateProvider
+@inject AccessRepository Access
+@inject UserSessionRegistry SessionRegistry
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+
+@code {
+    private IDisposable? _subscription;
+    private CancellationTokenSource? _pollCts;
+    private Task? _pollTask;
+    private long _userId;
+    private string? _expectedVersion;
+    private volatile bool _disposed;
+    private int _revoked;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+        if (user.Identity?.IsAuthenticated != true) return;
+        if (!long.TryParse(user.FindFirstValue("examops_user_id"), out _userId)) return;
+        _expectedVersion = user.FindFirstValue("examops_row_version");
+
+        _subscription = SessionRegistry.Register(_userId, TriggerSignOutAsync);
+
+        // 双重保险：内存瞬时广播 + 4 秒定时探针，确保账号停用或权限变化后 5 秒内必下线。
+        _pollCts = new CancellationTokenSource();
+        _pollTask = PollLoopAsync(_pollCts.Token);
+    }
+
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(4));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_disposed || _revoked != 0) break;
+                var stamp = await Access.GetStampAsync(_userId);
+                if (stamp is null || stamp.Status != "Active" || stamp.RowVersion.ToString() != _expectedVersion)
+                {
+                    await TriggerSignOutAsync();
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task TriggerSignOutAsync()
+    {
+        if (_disposed || Interlocked.Exchange(ref _revoked, 1) != 0) return;
+        try
+        {
+            await InvokeAsync(() => Navigation.NavigateTo("/login?reason=session_revoked", forceLoad: true));
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _subscription?.Dispose();
+        if (_pollCts is not null)
+        {
+            await _pollCts.CancelAsync();
+            if (_pollTask is not null)
+            {
+                try { await _pollTask; } catch { }
+            }
+            _pollCts.Dispose();
+        }
+    }
+}

@@ -1,0 +1,215 @@
+@page "/exams/reviews/{AttemptId:long}"
+@attribute [Authorize(Policy = Permissions.ExamAttemptRead)]
+@rendermode InteractiveServer
+@using System.Text.Json
+@inject ExamReviewService Service
+@inject ICurrentUser CurrentUser
+@inject ILogger<ExamReviewDetail> Logger
+
+<div class="exam-page">
+    <a class="exam-back" href="/exams/reviews"><Icon Name="arrow-left" />返回复核队列</a>
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在读取答卷复核信息…</div>
+    }
+    else if (_row is null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@(_loadError ?? "答卷不存在或已超出当前数据范围。")" /></section>
+    }
+    else
+    {
+        <PageHeader Title="@_row.TaskTitle" Description="@($"{_row.UserName} · {_row.DepartmentName} · 答卷 #{_row.AttemptId}")">
+            <Actions><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />刷新</button></Actions>
+        </PageHeader>
+        @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+        <div class="exam-detail-grid">
+            <div class="exam-stack">
+                <section class="card">
+                    <header class="exam-section-head"><div><h2>答卷事实</h2><p>复核只追加记录，不改变答案、答卷状态或原始自动判分。</p></div><span class="badge @ExamLabels.BadgeClass(_row.Status)">@ExamLabels.AttemptStatus(_row.Status)</span></header>
+                    <dl class="exam-facts">
+                        <div><dt>当前分</dt><dd>@(_row.Score?.ToString("0.##") ?? "未判分")</dd></div>
+                        <div><dt>原始自动分</dt><dd>@(_row.AutoScore?.ToString("0.##") ?? "—")</dd></div>
+                        <div><dt>满分</dt><dd>@_row.MaxScore.ToString("0.##")</dd></div>
+                        <div><dt>作答次数</dt><dd>第 @_row.AttemptNo 次</dd></div>
+                        <div><dt>格式异常</dt><dd>@_row.InvalidAnswerCount 题</dd></div>
+                        <div><dt>行版本</dt><dd>@_row.RowVersion</dd></div>
+                        <div><dt>交卷时间</dt><dd>@TimeFormat.Display(_row.SubmittedAt)</dd></div>
+                        <div><dt>阅卷时间</dt><dd>@TimeFormat.Display(_row.GradedAt)</dd></div>
+                        <div><dt>安排 ID</dt><dd>@_row.AssignmentId</dd></div>
+                    </dl>
+                </section>
+
+                <AuthorizeView Policy="@Permissions.ExamAttemptGrade">
+                    <section class="card">
+                        <header class="exam-section-head"><div><h2>追加复核事件</h2><p>原因至少 10 个字符，将连同操作者和时间写入不可变事件记录。</p></div></header>
+                        <form class="card-body exam-form" @onsubmit="AddReviewAsync" @onsubmit:preventDefault>
+                            <div class="field"><label for="review-event-type">复核类型</label><select id="review-event-type" class="select" @bind="_eventType" @bind:after="ResetReviewMetadata"><option value="@ReviewTypes.FormatAnomaly">格式异常</option><option value="@ReviewTypes.Dispute">判分异议</option><option value="@ReviewTypes.VoidRequest">作废申请</option></select></div>
+                            <div class="field"><label for="review-event-reason">复核原因</label><textarea id="review-event-reason" class="textarea" rows="4" minlength="10" maxlength="1000" required @bind="_eventReason" @bind:after="ResetReviewMetadata" placeholder="说明发现的客观题格式问题、判分异议或作废依据"></textarea><span class="field-hint">仅支持客观题；不分析简答题，也不会重新判分或修改答案。</span></div>
+                            @if (!string.IsNullOrWhiteSpace(_reviewError)) { <Alert Kind="danger" Message="@_reviewError" /> }
+                            <div class="exam-actions"><button type="submit" class="btn btn-primary" disabled="@_busy"><Icon Name="plus" />@(_busy ? "正在保存…" : "追加复核事件")</button></div>
+                        </form>
+                    </section>
+                </AuthorizeView>
+
+                <AuthorizeView Policy="@Permissions.ExamAttemptAdjustScore">
+                    <section class="card">
+                        <header class="exam-section-head"><div><h2>调整当前成绩</h2><p>保留原始自动分和逐题判分事实；新旧分数、原因、操作者与时间均会留痕。</p></div></header>
+                        @if (_row.Status != "Graded")
+                        {
+                            <p class="exam-inline-note">仅已自动判分的答卷可以调分。</p>
+                        }
+                        else
+                        {
+                            <form class="card-body exam-form" @onsubmit="AdjustAsync" @onsubmit:preventDefault>
+                                <div class="exam-modal-grid">
+                                    <div class="field"><label for="adjust-new-score">新分数</label><input id="adjust-new-score" class="input" type="number" min="0" max="@_row.MaxScore" step="0.01" required @bind="_newScore" @bind:after="ResetAdjustMetadata" /></div>
+                                    <div class="field"><label>旧分数</label><p class="exam-score-fact">@(_row.Score?.ToString("0.##") ?? "—")</p></div>
+                                </div>
+                                <div class="field"><label for="adjust-reason">调分原因</label><textarea id="adjust-reason" class="textarea" rows="3" minlength="10" maxlength="1000" required @bind="_adjustReason" @bind:after="ResetAdjustMetadata" placeholder="说明调分依据，至少 10 个字符"></textarea></div>
+                                @if (!string.IsNullOrWhiteSpace(_adjustError)) { <Alert Kind="danger" Message="@_adjustError" /> }
+                                <div class="exam-actions"><button type="submit" class="btn btn-primary" disabled="@_busy"><Icon Name="edit" />@(_busy ? "正在处理…" : "确认调分")</button></div>
+                            </form>
+                        }
+                    </section>
+                </AuthorizeView>
+            </div>
+
+            <aside class="exam-stack">
+                <section class="card">
+                    <header class="exam-section-head"><div><h2>复核记录</h2><p>最近 100 条复核事件</p></div></header>
+                    @if (_events.Count == 0)
+                    {
+                        <EmptyState Title="暂无复核事件" Description="追加事件后，可在这里核对类型、原因、操作者和时间。" IconName="paper" />
+                    }
+                    else
+                    {
+                        <div class="exam-event-list">
+                            @foreach (var item in _events)
+                            {
+                                <article class="exam-event-item">
+                                    <div><span class="badge badge-info">@ExamLabels.ReviewType(item.EventType)</span><time datetime="@item.OccurredAt.ToString("O")">@TimeFormat.Display(item.OccurredAt)</time></div>
+                                    <p>@ReviewReason(item.PayloadJson)</p><small>@(item.ActorName ?? "系统") · 事件 #@item.Id</small>
+                                </article>
+                            }
+                        </div>
+                    }
+                </section>
+            </aside>
+        </div>
+
+        <section class="card exam-spaced">
+            <header class="exam-section-head"><div><h2>调分历史</h2><p>每次调整均保留旧分、新分、原因和操作者。</p></div></header>
+            @if (_adjustments is null || _adjustments.Items.Count == 0)
+            {
+                <EmptyState Title="暂无调分记录" Description="当前账号可以查看的答卷调分记录会显示在这里。" IconName="paper" />
+            }
+            else
+            {
+                <div class="table-wrap"><table class="table"><thead><tr><th scope="col">调整时间</th><th scope="col">旧分</th><th scope="col">新分</th><th scope="col">原因</th><th scope="col">操作者</th></tr></thead><tbody>
+                    @foreach (var item in _adjustments.Items)
+                    {
+                        <tr><td>@TimeFormat.Display(item.CreatedAt)</td><td>@item.OldScore.ToString("0.##")</td><td>@item.NewScore.ToString("0.##")</td><td>@item.Reason</td><td>@item.AdjustedByName</td></tr>
+                    }
+                </tbody></table></div>
+                <Pagination TotalCount="_adjustments.TotalCount" PageIndex="_adjustments.PageIndex" PageSize="_adjustments.PageSize" PageChanged="ChangeAdjustmentPageAsync" />
+            }
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter] public long AttemptId { get; set; }
+    private ReviewQueueRow? _row;
+    private IReadOnlyList<AttemptEventRow> _events = [];
+    private PagedResult<ScoreAdjustmentRow>? _adjustments;
+    private string _eventType = ReviewTypes.Dispute;
+    private string _eventReason = "";
+    private decimal? _newScore;
+    private string _adjustReason = "";
+    private bool _loading = true;
+    private bool _busy;
+    private int _adjustmentPage = 1;
+    private const int AdjustmentPageSize = 20;
+    private string? _loadError;
+    private string? _reviewError;
+    private string? _adjustError;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _reviewMetadata;
+    private ApiAuditMetadata? _adjustMetadata;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _loadError = null;
+        try
+        {
+            await CurrentUser.LoadAsync();
+            _row = await Service.GetDetailAsync(AttemptId);
+            if (_row is null) return;
+            _events = await Service.GetEventsAsync(AttemptId);
+            await LoadAdjustmentsAsync();
+            _newScore = _row.Score;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载答卷复核详情失败"); _loadError = "答卷复核信息加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    private async Task LoadAdjustmentsAsync()
+    {
+        if (CurrentUser.HasPermission(Permissions.ExamAttemptAdjustScore))
+            _adjustments = await Service.GetAdjustmentsAsync(AttemptId, _adjustmentPage, AdjustmentPageSize);
+    }
+
+    private void ResetReviewMetadata() { _reviewMetadata = null; _reviewError = null; }
+    private void ResetAdjustMetadata() { _adjustMetadata = null; _adjustError = null; }
+
+    private async Task AddReviewAsync()
+    {
+        if (_busy || _row is null) return;
+        if (_eventReason.Trim().Length < 10) { _reviewError = "复核原因至少需要 10 个字符。"; return; }
+        _busy = true; _reviewError = null;
+        try
+        {
+            _reviewMetadata ??= ExamAudit.Create("exam-attempt-review", AttemptId);
+            var result = await Service.AddReviewEventAsync(AttemptId, new ReviewEventInput(_eventType, _eventReason.Trim()), _reviewMetadata);
+            if (!result.IsSuccess) { _reviewError = result.Error; return; }
+            _eventReason = ""; _reviewMetadata = null; _message = "复核事件已追加，答卷状态保持不变。"; _messageKind = "success";
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "追加复核事件失败"); _reviewError = "复核事件保存失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private async Task AdjustAsync()
+    {
+        if (_busy || _row is null) return;
+        if (!_newScore.HasValue) { _adjustError = "请输入新分数。"; return; }
+        if (_adjustReason.Trim().Length < 10) { _adjustError = "调分原因至少需要 10 个字符。"; return; }
+        _busy = true; _adjustError = null;
+        try
+        {
+            _adjustMetadata ??= ExamAudit.Create("exam-attempt-adjust-score", AttemptId);
+            var result = await Service.AdjustScoreAsync(AttemptId,
+                new AdjustScoreInput(_row.Score ?? 0, _newScore.Value, _adjustReason.Trim(), _row.RowVersion), _adjustMetadata);
+            if (!result.IsSuccess) { _adjustError = result.Error; return; }
+            _adjustReason = ""; _adjustMetadata = null; _message = "成绩已调整，原始自动分与调分历史均已保留。"; _messageKind = "success";
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "调整答卷成绩失败"); _adjustError = "调分失败，请刷新后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private Task ChangeAdjustmentPageAsync(int page) { _adjustmentPage = page; return LoadAdjustmentsAsync(); }
+
+    private static string ReviewReason(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("reason", out var reason) ? reason.GetString() ?? "—" : "—";
+        }
+        catch (JsonException) { return "—"; }
+    }
+}

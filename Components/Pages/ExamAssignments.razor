@@ -1,0 +1,226 @@
+@page "/exams/assignments"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.ExamAssignmentRead)]
+@inject AssignmentService Service
+@inject ExamTaskService Tasks
+@inject ICurrentUser CurrentUser
+@inject ILogger<ExamAssignments> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    <PageHeader Title="考试分配" Description="查看考生安排、撤回单个分配，或为符合条件的安排追加重考次数。">
+        <Actions><AuthorizeView Policy="@Permissions.ExamTaskRead"><a class="btn btn-secondary" href="/exams/tasks"><Icon Name="arrow-left" />考试任务</a></AuthorizeView></Actions>
+    </PageHeader>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    @if (!_canRevoke || !_canRetake) { <Alert Kind="info" Message="撤回和重考授权受独立权限控制；无权限的操作已禁用，并保留只读信息。" /> }
+    @if (!string.IsNullOrWhiteSpace(_filterError)) { <Alert Kind="warning" Message="@_filterError" /> }
+
+    <section class="card exam-toolbar" aria-label="分配筛选">
+        <div class="field"><label for="assignment-keyword">搜索考生</label><input id="assignment-keyword" class="input" type="search" value="@_keyword" @oninput="OnKeywordInput" placeholder="姓名或账号" autocomplete="off" /></div>
+        <div class="field"><label for="assignment-task">考试任务</label><select id="assignment-task" class="select" @bind="_taskFilter" @bind:after="FiltersChangedAsync"><option value="">全部任务</option>@foreach (var task in _tasks) { <option value="@task.Id">@task.Title (@task.Code)</option> }</select></div>
+        <div class="field"><label for="assignment-status">安排状态</label><select id="assignment-status" class="select" @bind="_status" @bind:after="FiltersChangedAsync"><option value="">全部状态</option><option value="Pending">待生效</option><option value="Available">可考试</option><option value="InProgress">考试中</option><option value="Submitted">已交卷</option><option value="Graded">已阅卷</option><option value="Closed">已结束</option><option value="Expired">已过期</option><option value="Revoked">已撤回</option></select></div>
+        <button type="button" class="btn btn-secondary" @onclick="ClearAsync"><Icon Name="refresh" />重置</button>
+    </section>
+
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载考试分配…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button></section>
+    }
+    else if (_result is null || _result.Items.Count == 0)
+    {
+        <section class="card exam-empty-card"><EmptyState Title="没有符合条件的分配" Description="调整筛选条件，或从已发布考试任务发起下发。" IconName="users"><Action><AuthorizeView Policy="@Permissions.ExamTaskRead"><a class="btn btn-secondary" href="/exams/tasks">查看考试任务</a></AuthorizeView></Action></EmptyState></section>
+    }
+    else
+    {
+        <section class="exam-batch-list" aria-label="考试分配列表">
+            @foreach (var row in _result.Items)
+            {
+                <article class="card exam-card">
+                    <div class="exam-card__head"><div class="exam-card__title"><h2>@row.DisplayName</h2><p>@row.TaskTitle · @row.DepartmentName</p></div><span class="badge @ExamLabels.BadgeClass(row.Status)">@ExamLabels.AssignmentStatus(row.Status)</span></div>
+                    <dl class="exam-card__facts">
+                        <div><dt>开放时间</dt><dd>@TimeFormat.Display(row.AvailableFrom)</dd></div>
+                        <div><dt>结束时间</dt><dd>@TimeFormat.Display(row.AvailableTo)</dd></div>
+                        <div><dt>已用 / 基础次数</dt><dd>@(row.AttemptsUsed + row.InheritedAttemptsUsed) / @row.AttemptLimit</dd></div>
+                        <div><dt>有效追加次数</dt><dd>@row.GrantedAttempts</dd></div>
+                    </dl>
+                    <p class="exam-card__meta">当前答卷：@(row.CurrentAttemptId is null ? "无" : $"#{row.CurrentAttemptId} · {ExamLabels.AttemptStatus(row.CurrentAttemptStatus)}")</p>
+                    <footer class="exam-card__footer">
+                        <span class="exam-card__meta">分配编号 #@row.Id</span>
+                        <div class="exam-actions">
+                            <button type="button" class="btn btn-secondary" disabled="@(!_canRetake || !CanGrant(row.Status))" @onclick="() => OpenRetake(row)"><Icon Name="plus" />追加重考</button>
+                            <button type="button" class="btn btn-danger" disabled="@(!_canRevoke || row.Status == "Revoked")" @onclick="() => OpenRevoke(row)">撤回分配</button>
+                        </div>
+                    </footer>
+                </article>
+            }
+        </section>
+        <section class="card"><Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" /></section>
+    }
+</div>
+
+<Modal IsOpen="_revokeOpen" Title="撤回考生分配" OnClose="CloseRevoke">
+    <ChildContent>
+        <p class="exam-confirm-copy">确认撤回 @_pending?.DisplayName 在“@_pending?.TaskTitle”中的考试安排？该操作不能撤销。</p>
+        <div class="field"><label for="assignment-revoke-reason">撤回原因</label><textarea id="assignment-revoke-reason" class="textarea" rows="3" @bind="_reason" @bind:after="ResetMutationMetadata" minlength="10" maxlength="1000" required></textarea><span class="field-hint">至少 10 个字符，将写入审计日志。</span></div>
+        <div class="field"><label for="assignment-revoke-policy">进行中答卷处理</label><select id="assignment-revoke-policy" class="select" @bind="_policy" @bind:after="ResetMutationMetadata"><option value="KeepScore">保留已保存答案与成绩</option><option value="VoidScore">保留答卷，但成绩计 0 分</option><option value="ForceSubmit">立即按当前答案交卷并阅卷</option><option value="VoidAttempt">作废进行中的答卷</option></select></div>
+        @if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseRevoke">取消</button><button type="button" class="btn btn-danger" disabled="@_busy" @onclick="RevokeAsync">确认撤回</button></FooterContent>
+</Modal>
+
+<Modal IsOpen="_retakeOpen" Title="追加重考次数" OnClose="CloseRetake">
+    <ChildContent>
+        <p class="exam-confirm-copy">为 @_pending?.DisplayName 的“@_pending?.TaskTitle”安排追加考试次数。授权立即生效。</p>
+        <div class="field"><label for="retake-count">追加次数</label><input id="retake-count" class="input" type="number" min="1" max="100" step="1" value="@_extraAttempts" @onchange="ChangeExtraAttempts" required /></div>
+        <div class="field"><label for="retake-expiry">授权有效期（可选）</label><input id="retake-expiry" class="input" type="datetime-local" value="@_expiresAt" @onchange="ChangeExpiry" /><span class="field-hint">留空表示长期有效；到期后不再增加可考试次数。</span></div>
+        <div class="field"><label for="retake-reason">授权原因</label><textarea id="retake-reason" class="textarea" rows="3" @bind="_reason" @bind:after="ResetMutationMetadata" minlength="10" maxlength="1000" required></textarea><span class="field-hint">请填写至少 10 个字符，便于审计与复核。</span></div>
+        @if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseRetake">取消</button><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="GrantAsync">确认授权</button></FooterContent>
+</Modal>
+
+@code {
+    [SupplyParameterFromQuery(Name = "taskId")] public long? RequestedTaskId { get; set; }
+
+    private PagedResult<ExamAssignmentRow>? _result;
+    private IReadOnlyList<ExamTaskRow> _tasks = [];
+    private CancellationTokenSource? _searchCancellation;
+    private string _keyword = "";
+    private string _taskFilter = "";
+    private string _status = "";
+    private int _pageIndex = 1;
+    private int _loadVersion;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _canRevoke;
+    private bool _canRetake;
+    private bool _revokeOpen;
+    private bool _retakeOpen;
+    private ExamAssignmentRow? _pending;
+    private string _reason = "";
+    private string _policy = "KeepScore";
+    private int _extraAttempts = 1;
+    private string? _expiresAt;
+    private string? _loadError;
+    private string? _filterError;
+    private string? _error;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _mutationMetadata;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CurrentUser.LoadAsync();
+        _canRevoke = CurrentUser.HasPermission(Permissions.ExamAssignmentRevoke);
+        _canRetake = CurrentUser.HasPermission(Permissions.ExamAssignmentGrantRetake);
+        if (RequestedTaskId is > 0) _taskFilter = RequestedTaskId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        try
+        {
+            var result = await Tasks.GetPagedAsync(new ExamTaskQuery(null, null, null, 1, 100));
+            _tasks = result.Items;
+            if (result.TotalCount > result.Items.Count) _filterError = "任务选项仅显示最近 100 条；可通过考试任务详情进入对应分配列表。";
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载分配任务选项失败"); _filterError = "任务选项加载失败，仍可按考生和状态筛选。"; }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            var taskId = long.TryParse(_taskFilter, out var parsed) && parsed > 0 ? parsed : 0;
+            var query = new AssignmentQuery(taskId, string.IsNullOrWhiteSpace(_status) ? null : _status, string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(), _pageIndex, PageSize);
+            var result = await Service.GetPagedAsync(query);
+            if (version != _loadVersion) return;
+            _result = result;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载考试分配列表失败"); _loadError = "考试分配加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task OnKeywordInput(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try { await Task.Delay(300, cancellation.Token); _pageIndex = 1; await LoadAsync(); }
+        catch (OperationCanceledException) { return; }
+        finally { if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null; cancellation.Dispose(); }
+    }
+
+    private Task FiltersChangedAsync() { _pageIndex = 1; return LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+    private async Task ClearAsync() { _searchCancellation?.Cancel(); _keyword = ""; _taskFilter = ""; _status = ""; _pageIndex = 1; _message = null; await LoadAsync(); }
+    private static bool CanGrant(string status) => status is not ("Revoked" or "Expired" or "Closed");
+
+    private void OpenRevoke(ExamAssignmentRow row)
+    {
+        if (!_canRevoke || row.Status == "Revoked" || _busy) return;
+        _pending = row; _reason = ""; _policy = "KeepScore"; _error = null; _mutationMetadata = null; _revokeOpen = true;
+    }
+    private void CloseRevoke() { if (!_busy) _revokeOpen = false; }
+    private void OpenRetake(ExamAssignmentRow row)
+    {
+        if (!_canRetake || !CanGrant(row.Status) || _busy) return;
+        _pending = row; _reason = ""; _expiresAt = null; _extraAttempts = 1; _error = null; _mutationMetadata = null; _retakeOpen = true;
+    }
+    private void CloseRetake() { if (!_busy) _retakeOpen = false; }
+    private void ResetMutationMetadata() => _mutationMetadata = null;
+    private void ChangeExtraAttempts(ChangeEventArgs args) { _extraAttempts = int.TryParse(args.Value?.ToString(), out var count) ? count : 0; _mutationMetadata = null; }
+    private void ChangeExpiry(ChangeEventArgs args) { _expiresAt = args.Value?.ToString(); _mutationMetadata = null; }
+
+    private async Task RevokeAsync()
+    {
+        if (_busy || _pending is null || !_canRevoke) return;
+        if (_reason.Trim().Length < 10) { _error = "撤回原因至少需要 10 个字符。"; return; }
+        _busy = true; _error = null;
+        try
+        {
+            _mutationMetadata ??= ExamAudit.Create("exam-assignment-revoke", _pending.Id);
+            var result = await Service.RevokeAsync(_pending.Id, new RevokeAssignmentInput(_pending.RowVersion, _reason.Trim(), _policy), _mutationMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "撤回分配失败。"; return; }
+            _revokeOpen = false; _message = "考生分配已撤回。"; _messageKind = "success"; await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "撤回考生分配失败"); _error = "撤回失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private async Task GrantAsync()
+    {
+        if (_busy || _pending is null || !_canRetake) return;
+        if (_extraAttempts is < 1 or > 100) { _error = "追加次数需为 1–100。"; return; }
+        if (_reason.Trim().Length < 10) { _error = "授权原因至少需要 10 个字符。"; return; }
+        DateTime? expires = null;
+        if (!string.IsNullOrWhiteSpace(_expiresAt))
+        {
+            if (!DateTime.TryParseExact(_expiresAt, "yyyy-MM-ddTHH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var local)) { _error = "请填写有效的授权有效期。"; return; }
+            expires = DateTime.SpecifyKind(local, DateTimeKind.Unspecified).ToUniversalTime();
+        }
+        _busy = true; _error = null;
+        try
+        {
+            _mutationMetadata ??= ExamAudit.Create("exam-assignment-retake", _pending.Id);
+            var result = await Service.GrantRetakeAsync(_pending.Id, new GrantRetakeInput(_pending.RowVersion, _extraAttempts, _reason.Trim(), expires), _mutationMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "追加重考授权失败。"; return; }
+            _retakeOpen = false; _message = "重考授权已生效。"; _messageKind = "success"; await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "追加重考授权失败"); _error = "授权失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadVersion++;
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,76 @@
+@attribute [Authorize(Policy = Permissions.QuestionRead)]
+@inject QuestionService Service
+@inject ILogger<QuestionTagPanel> Logger
+
+<section class="card question-tag-panel" aria-labelledby="question-tag-title">
+    <header class="card-header"><h2 id="question-tag-title" class="card-title">全局标签</h2></header>
+    <div class="card-body">
+        @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+        @if (_loading)
+        {
+            <div class="loading-state compact" role="status"><span class="spinner" aria-hidden="true"></span>正在加载标签…</div>
+        }
+        else if (_loadError is not null)
+        {
+            <Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync">重试标签加载</button>
+        }
+        else if (_tags.Count == 0)
+        {
+            <EmptyState Title="还没有标签" Description="标签可用于跨题库筛选题目。" IconName="grid" />
+        }
+        else
+        {
+            <div class="tag-list">
+                @foreach (var tag in _tags)
+                {
+                    <span class="badge @(tag.IsActive ? "badge-info" : "badge-neutral")">@tag.Name@(tag.IsActive ? "" : "（停用）")</span>
+                }
+            </div>
+        }
+        <AuthorizeView Policy="@Permissions.QuestionUpdate">
+            <form class="tag-create" @onsubmit="CreateTagAsync" @onsubmit:preventDefault>
+                <div class="field"><label for="new-question-tag">新建标签</label><input id="new-question-tag" class="input" @bind="_newTagName" maxlength="128" autocomplete="off" disabled="@_busy" /></div>
+                <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "正在创建…" : "创建标签")</button>
+            </form>
+        </AuthorizeView>
+    </div>
+</section>
+
+@code {
+    private IReadOnlyList<QuestionTagRow> _tags = [];
+    private bool _loading = true;
+    private bool _busy;
+    private string _newTagName = "";
+    private string? _loadError;
+    private string? _message;
+    private string _messageKind = "info";
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try { _tags = await Service.GetTagsAsync(); }
+        catch (Exception ex) { Logger.LogError(ex, "加载标签失败"); _loadError = "标签加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    private async Task CreateTagAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _message = null;
+        try
+        {
+            var result = await Service.CreateTagAsync(_newTagName);
+            if (!result.IsSuccess) { _message = result.Error ?? "标签创建失败。"; _messageKind = "danger"; return; }
+            _newTagName = "";
+            _message = "标签已创建。";
+            _messageKind = "success";
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "创建标签失败"); _message = "标签创建失败，请稍后重试。"; _messageKind = "danger"; }
+        finally { _busy = false; }
+    }
+}

@@ -1,0 +1,4 @@
+.simple-state { display: grid; justify-items: center; max-width: 560px; text-align: center; }
+.state-code { color: var(--color-primary); font-size: var(--text-3xl); font-weight: 800; }
+.simple-state h1 { margin-bottom: var(--space-2); }
+.simple-state p { margin-bottom: var(--space-6); }

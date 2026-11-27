@@ -1,0 +1,195 @@
+@page "/exams/publication"
+@attribute [Authorize(Policy = Permissions.ExamResultPublish)]
+@rendermode InteractiveServer
+@inject ResultReleaseService Service
+@inject ILogger<ExamPublication> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    <PageHeader Title="成绩公布" Description="发布不可变成绩快照，或撤回当前公布；重发布会追加新批次，不改写历史。">
+        <Actions><button type="button" class="btn btn-secondary" disabled="@_loading" @onclick="LoadAsync"><Icon Name="refresh" />刷新</button></Actions>
+    </PageHeader>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    <section class="card exam-toolbar" aria-label="选择考试任务">
+        <div class="field"><label for="publication-task">考试任务</label><select id="publication-task" class="select" value="@_taskId" @onchange="TaskChangedAsync"><option value="">请选择任务</option>@foreach (var task in _tasks) { <option value="@task.Id">@task.Title · @ExamLabels.ResultStatus(task.ResultStatus)</option> }</select></div>
+        <p class="field-hint">只显示当前账号有公布权限且在数据范围内的任务。</p>
+    </section>
+
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载成绩状态…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync">重新加载</button></section>
+    }
+    else if (_task is null)
+    {
+        <section class="card"><EmptyState Title="选择一项考试" Description="选择任务后，可核对成绩策略、公布状态与历史发布批次。" IconName="paper" /></section>
+    }
+    else
+    {
+        <div class="exam-detail-grid">
+            <div class="exam-stack">
+                <section class="card">
+                    <header class="exam-section-head"><div><h2>@_task.Title</h2><p>任务 #@_task.Id · 行版本 @_task.RowVersion</p></div><span class="badge @(_task.ResultStatus == "Published" ? "badge-success" : _task.ResultStatus == "Withdrawn" ? "badge-warning" : "badge-neutral")">@ExamLabels.ResultStatus(_task.ResultStatus)</span></header>
+                    <dl class="exam-facts">
+                        <div><dt>任务状态</dt><dd>@ExamLabels.TaskStatus(_task.Status)</dd></div>
+                        <div><dt>最终分策略</dt><dd>@ExamLabels.ScorePolicy(_task.ScorePolicy)</dd></div>
+                        <div><dt>公布策略</dt><dd>@ExamLabels.ResultPolicy(_task.ResultReleasePolicy)</dd></div>
+                        <div><dt>发布时间</dt><dd>@TimeFormat.Display(_task.ResultPublishedAt)</dd></div>
+                        <div><dt>撤回时间</dt><dd>@TimeFormat.Display(_task.ResultWithdrawnAt)</dd></div>
+                        <div><dt>当前发布 ID</dt><dd>@(_task.ResultReleaseId?.ToString() ?? "—")</dd></div>
+                    </dl>
+                    @if (!string.IsNullOrWhiteSpace(_task.ResultWithdrawReason)) { <p class="exam-inline-note">撤回原因：@_task.ResultWithdrawReason</p> }
+                </section>
+                <section class="card">
+                    <header class="exam-section-head"><h2>公布操作</h2></header>
+                    <div class="card-body">
+                        @if (_task.ResultStatus == "Published")
+                        {
+                            <Alert Kind="info" Message="成绩当前已公布。撤回后考生将立即看不到成绩，但发布快照与审计记录会保留。" />
+                        }
+                        else if (_task.ResultReleasePolicy == "AfterClose" && _task.Status != "Closed")
+                        {
+                            <Alert Kind="warning" Message="本任务采用“考试关闭后公布”策略，需先关闭考试才能发布成绩。" />
+                        }
+                        else if (_task.Status is not ("Published" or "Closed"))
+                        {
+                            <Alert Kind="warning" Message="只有已发布或已关闭的考试任务可以公布成绩。" />
+                        }
+                        else
+                        {
+                            <Alert Kind="info" Message="发布前会再次检查：没有可继续考试的安排，没有进行中或待阅卷答卷，且成绩满足当前计分策略。" />
+                        }
+                        <div class="exam-actions">
+                            <button type="button" class="btn btn-primary" disabled="@(!CanPublish)" @onclick="RequestPublish"><Icon Name="check" />@(_task.ResultStatus == "Withdrawn" ? "重新发布成绩" : "发布成绩")</button>
+                            <button type="button" class="btn btn-danger" disabled="@(!CanWithdraw)" @onclick="RequestWithdraw"><Icon Name="archive" />撤回成绩</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            <aside class="card">
+                <header class="exam-section-head"><div><h2>口径说明</h2></div></header>
+                <div class="exam-inline-note exam-stack">
+                    <p>Latest / First / Highest / Average 均按每个安排的有效答卷计算最终分。</p>
+                    <p>无有效答卷时最终分为空，不会伪造为 0 分。</p>
+                    <p>发布后不可直接调分或追加复核；需先撤回成绩。</p>
+                </div>
+            </aside>
+        </div>
+
+        <section class="card exam-spaced">
+            <header class="exam-section-head"><div><h2>发布历史</h2><p>快照内容不可变；哈希用于核对发布载荷。</p></div></header>
+            @if (_history.Count == 0)
+            {
+                <EmptyState Title="暂无发布批次" Description="首次发布成功后，这里会显示批次、计分人数、发布时间与载荷哈希。" IconName="paper" />
+            }
+            else
+            {
+                <div class="table-wrap"><table class="table"><thead><tr><th scope="col">批次</th><th scope="col">计分人数</th><th scope="col">发布时间</th><th scope="col">发布者</th><th scope="col">载荷 SHA-256</th></tr></thead><tbody>
+                    @foreach (var item in _history)
+                    {
+                        <tr><td>第 @item.ReleaseNo 次</td><td>@item.ScoredCount / @item.AssignmentCount</td><td>@TimeFormat.Display(item.PublishedAt)</td><td>@(item.PublishedByName ?? "系统")</td><td><code class="exam-hash">@item.PayloadSha256</code></td></tr>
+                    }
+                </tbody></table></div>
+            }
+        </section>
+    }
+</div>
+
+<Modal IsOpen="_confirmOpen" Title="@(_action == "Withdraw" ? "确认撤回成绩" : "确认发布成绩")" OnClose="CloseConfirmAsync">
+    <ChildContent>
+        @if (_action == "Withdraw")
+        {
+            <Alert Kind="warning" Message="撤回后考生将立即无法查看成绩。发布快照仍会保留，重新发布会生成新的发布批次。" />
+            <div class="field"><label for="result-withdraw-reason">撤回原因</label><textarea id="result-withdraw-reason" class="textarea" rows="3" minlength="10" maxlength="1000" required @bind="_reason" @bind:after="ResetMetadata"></textarea><span class="field-hint">至少 10 个字符，将写入审计日志。</span></div>
+        }
+        else
+        {
+            <p class="exam-confirm-copy">将为“@_task?.Title”生成不可变发布快照。请确认所有安排已结束且答卷已完成阅卷。</p>
+        }
+        @if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseConfirmAsync">取消</button><button type="button" class="btn @(_action == "Withdraw" ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmAsync">@(_busy ? "正在处理…" : "确认")</button></FooterContent>
+</Modal>
+
+@code {
+    [SupplyParameterFromQuery(Name = "taskId")] public long? RequestedTaskId { get; set; }
+    private IReadOnlyList<ResultPublicationTaskRow> _tasks = [];
+    private ResultPublicationTaskRow? _task;
+    private IReadOnlyList<ResultReleaseHistoryRow> _history = [];
+    private long? _taskId;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _confirmOpen;
+    private string _action = "";
+    private string _reason = "";
+    private string? _loadError;
+    private string? _formError;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _metadata;
+    private int _loadVersion;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _taskId = RequestedTaskId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            _tasks = await Service.GetTasksAsync();
+            if (version != _loadVersion) return;
+            _taskId ??= _tasks.FirstOrDefault()?.Id;
+            _task = _tasks.FirstOrDefault(x => x.Id == _taskId);
+            _history = _task is null ? [] : await Service.GetHistoryAsync(_task.Id);
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载成绩发布信息失败"); _loadError = "成绩发布信息加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task TaskChangedAsync(ChangeEventArgs args)
+    {
+        _taskId = long.TryParse(args.Value?.ToString(), out var id) ? id : null;
+        _message = null;
+        await LoadAsync();
+    }
+
+    private bool CanPublish => _task is not null && _task.ResultStatus != "Published"
+        && _task.Status is ("Published" or "Closed")
+        && !(_task.ResultReleasePolicy == "AfterClose" && _task.Status != "Closed");
+    private bool CanWithdraw => _task?.ResultStatus == "Published";
+
+    private void RequestPublish() { _action = "Publish"; _reason = ""; _formError = null; _metadata = ExamAudit.Create("exam-result-publish", _task!.Id); _confirmOpen = true; }
+    private void RequestWithdraw() { _action = "Withdraw"; _reason = ""; _formError = null; _metadata = null; _confirmOpen = true; }
+    private void ResetMetadata() { _metadata = null; _formError = null; }
+    private Task CloseConfirmAsync() { if (!_busy) { _confirmOpen = false; _formError = null; } return Task.CompletedTask; }
+
+    private async Task ConfirmAsync()
+    {
+        if (_busy || _task is null) return;
+        if (_action == "Withdraw" && _reason.Trim().Length < 10) { _formError = "撤回原因至少需要 10 个字符。"; return; }
+        _busy = true; _formError = null;
+        try
+        {
+            _metadata ??= ExamAudit.Create($"exam-result-{_action.ToLowerInvariant()}", _task.Id);
+            Result result = _action == "Withdraw"
+                ? await Service.WithdrawAsync(_task.Id, new WithdrawResultInput(_task.RowVersion, _reason.Trim()), _metadata)
+                : await Service.PublishAsync(_task.Id, new PublishResultInput(_task.RowVersion), _metadata);
+            if (!result.IsSuccess) { _formError = result.Error; return; }
+            _message = _action == "Withdraw" ? "成绩已撤回，历史发布快照已保留。" : "成绩已发布，发布快照已生成。";
+            _messageKind = "success"; _confirmOpen = false; _metadata = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "成绩公布操作失败"); _formError = "操作失败，请刷新后重试。"; }
+        finally { _busy = false; }
+    }
+
+    public ValueTask DisposeAsync() { _loadVersion++; return ValueTask.CompletedTask; }
+}

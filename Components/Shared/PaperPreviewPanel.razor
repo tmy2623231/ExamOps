@@ -1,0 +1,47 @@
+<section class="card paper-preview" aria-labelledby="paper-preview-title">
+    <header class="card-header"><h2 id="paper-preview-title" class="card-title">实时预览</h2><span class="badge @(_blockingCount > 0 ? "badge-danger" : "badge-success")">@(_blockingCount > 0 ? $"{_blockingCount} 项待处理" : "组卷校验通过")</span></header>
+    <div class="card-body">
+        <div class="preview-total"><span>预计总分</span><strong>@Preview.TotalScore.ToString("0.##")</strong></div>
+        <dl class="preview-facts">
+            <div><dt>固定题</dt><dd>@Preview.FixedQuestionCount</dd></div>
+            <div><dt>随机抽取</dt><dd>@Preview.SelectedRandomCount</dd></div>
+            <div><dt>候选题 pool</dt><dd>@Preview.RandomPoolCount</dd></div>
+            <div><dt>固定重复</dt><dd>@Preview.DuplicateQuestionCount</dd></div>
+        </dl>
+        <h3 class="preview-subtitle">题型分布</h3>
+        @if (Preview.TypeSummary.Count == 0)
+        {
+            <p class="muted preview-empty">添加题目后显示题型、数量与预计分值。</p>
+        }
+        else
+        {
+            <ul class="preview-types">
+                @foreach (var summary in Preview.TypeSummary)
+                {
+                    <li><span>@TypeLabel(summary.Type)</span><strong>@summary.Count 道</strong><small>@summary.Score.ToString("0.##") 分</small></li>
+                }
+            </ul>
+        }
+        <h3 class="preview-subtitle">校验问题</h3>
+        @if (Preview.Issues.Count == 0)
+        {
+            <p class="preview-valid"><Icon Name="check" />当前内容通过组卷校验。</p>
+        }
+        else
+        {
+            <ul class="preview-issues">
+                @foreach (var issue in Preview.Issues)
+                {
+                    <li class="@(issue.Code == "POOL_OVERLAP" ? "is-warning" : null)"><Icon Name="@(issue.Code == "POOL_OVERLAP" ? "alert" : "close")" /><span>@issue.Message</span></li>
+                }
+            </ul>
+            <p class="field-hint">候选题重叠只作提示，实际抽题自动去重；其他问题会阻止发布。</p>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter] public PaperPreview Preview { get; set; } = new(0, 0, 0, 0, 0, [], []);
+    private int _blockingCount => Preview.Issues.Count(x => x.Code != "POOL_OVERLAP");
+    private static string TypeLabel(string type) => type switch { "SingleChoice" => "单选", "MultipleChoice" => "多选", "TrueFalse" => "判断", "待抽取" => "随机待抽取", _ => type };
+}

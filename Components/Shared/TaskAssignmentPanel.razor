@@ -1,0 +1,183 @@
+@inject AssignmentService Assignments
+@inject UserService Users
+@inject NavigationManager Navigation
+@inject ILogger<TaskAssignmentPanel> Logger
+@implements IAsyncDisposable
+
+<section class="card">
+    <header class="exam-section-head"><div><h2>任务下发</h2><p>预览匹配结果并排除已有安排的考生，再确认创建批次。</p></div><button type="button" class="btn btn-primary" disabled="@(!CanAssign || _busy)" @onclick="Open"><Icon Name="users" />下发考生</button></header>
+    @if (!CanAssign) { <p class="exam-inline-note">当前账号没有考试分配创建权限，不能预览或下发。</p> }
+    else { <p class="exam-inline-note">已发布任务可下发；重新下发旧安排和继承次数必须显式选择。</p> }
+</section>
+
+<Modal IsOpen="_open" Title="@(_preview is null ? "选择下发对象" : "核对下发预览")" Wide="true" OnClose="Close">
+    <ChildContent>
+        @if (_preview is null)
+        {
+            <p class="exam-confirm-copy">可按整个任务部门（含子部门）下发，也可补充指定考生。预览不会创建安排。</p>
+            <fieldset class="selection-fieldset">
+                <legend>部门范围</legend>
+                <label class="checkbox-row"><input type="checkbox" checked="@_wholeDepartment" @onchange="e => _wholeDepartment = e.Value is bool value && value" /><span class="checkbox-copy"><strong>任务部门全体成员</strong><small>仅包含任务部门范围内的启用用户。</small></span></label>
+                <label class="checkbox-row"><input type="checkbox" checked="@_includeDescendants" @onchange="e => _includeDescendants = e.Value is bool value && value" /><span class="checkbox-copy"><strong>包含子部门</strong><small>关闭时仅匹配任务部门本身。</small></span></label>
+            </fieldset>
+            <div class="field"><label for="assignment-user-search">补充指定考生</label><input id="assignment-user-search" class="input" type="search" value="@_keyword" @oninput="SearchUsers" placeholder="搜索姓名或账号" autocomplete="off" /></div>
+            @if (!string.IsNullOrWhiteSpace(_optionsError)) { <Alert Kind="warning" Message="@_optionsError" /><button type="button" class="btn btn-secondary" @onclick="LoadUsersAsync"><Icon Name="refresh" />重试考生选项</button> }
+            else if (_users.Count == 0 && !_loadingUsers)
+            {
+                <EmptyState Title="没有匹配考生" Description="调整搜索词，或选择整个部门。" IconName="users" />
+            }
+            else
+            {
+                <div class="exam-choice-grid">
+                    @foreach (var user in _users)
+                    {
+                        <label class="checkbox-row"><input type="checkbox" checked="@_userIds.Contains(user.Id)" @onchange="e => ToggleUser(user.Id, e.Value)" /><span class="checkbox-copy"><strong>@user.DisplayName</strong><small>@user.Username · @user.PrimaryDepartmentName</small></span></label>
+                    }
+                </div>
+                <p class="field-hint">每次显示前 20 个匹配考生，可按姓名或账号缩小范围。</p>
+            }
+            <fieldset class="selection-fieldset">
+                <legend>旧安排处理</legend>
+                <label class="checkbox-row"><input type="checkbox" checked="@_reissueRevoked" @onchange="e => _reissueRevoked = e.Value is bool value && value" /><span class="checkbox-copy"><strong>重新下发已撤回安排</strong><small>未勾选时，已撤回的考生将被跳过。</small></span></label>
+                <label class="checkbox-row"><input type="checkbox" checked="@_inheritAttempts" @onchange="e => _inheritAttempts = e.Value is bool value && value" /><span class="checkbox-copy"><strong>重新下发时继承已用次数</strong><small>避免通过撤回再下发重置考试次数。</small></span></label>
+            </fieldset>
+        }
+        else
+        {
+            <div class="exam-preview-summary"><span class="badge badge-neutral">共 @_preview.TotalCount 人</span><span class="badge badge-success">可下发 @_preview.EligibleCount</span><span class="badge badge-neutral">跳过 @_preview.SkippedCount</span><span class="badge badge-danger">不可下发 @_preview.FailedCount</span></div>
+            @if (_preview.EligibleCount == 0) { <Alert Kind="warning" Message="没有可下发的考生。请返回修改范围，或确认旧安排处理选项。" /> }
+            <div class="exam-preview-list" aria-label="下发预览结果">
+                @foreach (var row in _preview.Rows)
+                {
+                    <div class="exam-preview-row"><div><strong>@row.DisplayName</strong><p>@row.DepartmentName @(string.IsNullOrWhiteSpace(row.Message) ? "" : $"· {row.Message}")</p></div><span class="badge @ExamLabels.BadgeClass(row.Outcome)">@ExamLabels.PreviewOutcome(row.Outcome)</span></div>
+                }
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }
+    </ChildContent>
+    <FooterContent>
+        @if (_preview is null)
+        {
+            <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="Close">取消</button>
+            <button type="button" class="btn btn-primary" disabled="@(_busy || (!_wholeDepartment && _userIds.Count == 0))" @onclick="PreviewAsync">@(_busy ? "正在预览…" : "生成预览")</button>
+        }
+        else
+        {
+            <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="EditTarget">返回修改</button>
+            <button type="button" class="btn btn-primary" disabled="@(_busy || _preview.EligibleCount == 0 || !CanAssign)" @onclick="AssignAsync">@(_busy ? "正在下发…" : $"确认下发 {_preview.EligibleCount} 人")</button>
+        }
+    </FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public long TaskId { get; set; }
+    [Parameter] public long TaskRowVersion { get; set; }
+    [Parameter] public long DepartmentId { get; set; }
+    [Parameter] public bool CanAssign { get; set; }
+
+    private IReadOnlyList<UserRow> _users = [];
+    private HashSet<long> _userIds = [];
+    private AssignmentPreview? _preview;
+    private CancellationTokenSource? _searchCancellation;
+    private ApiAuditMetadata? _assignMetadata;
+    private int _usersLoadVersion;
+    private string _keyword = "";
+    private bool _wholeDepartment;
+    private bool _includeDescendants = true;
+    private bool _reissueRevoked;
+    private bool _inheritAttempts = true;
+    private bool _open;
+    private bool _busy;
+    private bool _loadingUsers;
+    private string? _optionsError;
+    private string? _error;
+
+    private async Task Open()
+    {
+        if (!CanAssign || _busy) return;
+        _open = true; _preview = null; _error = null; _optionsError = null; _keyword = ""; _users = []; _userIds = [];
+        _wholeDepartment = false; _includeDescendants = true; _reissueRevoked = false; _inheritAttempts = true; _assignMetadata = null;
+        await LoadUsersAsync();
+    }
+
+    private void Close() { if (!_busy) { _open = false; _preview = null; } }
+    private void EditTarget() { if (!_busy) { _preview = null; _assignMetadata = null; _error = null; } }
+
+    private async Task SearchUsers(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            await LoadUsersAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        var version = ++_usersLoadVersion;
+        var keyword = string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim();
+        _loadingUsers = true; _optionsError = null;
+        try
+        {
+            var result = await Users.GetPagedAsync(keyword, "Active", null, 1, 20);
+            if (version != _usersLoadVersion) return;
+            _users = result.Items;
+        }
+        catch (Exception ex) { if (version == _usersLoadVersion) { Logger.LogError(ex, "加载下发考生选项失败"); _users = []; _optionsError = "考生选项加载失败，请检查用户查看权限后重试。"; } }
+        finally { if (version == _usersLoadVersion) _loadingUsers = false; }
+    }
+
+    private void ToggleUser(long id, object? value)
+    {
+        if (value is bool selected && selected) _userIds.Add(id); else _userIds.Remove(id);
+    }
+
+    private AssignmentTargetInput Target() => new(_userIds.OrderBy(x => x).ToArray(), _wholeDepartment ? new long[] { DepartmentId } : [], _includeDescendants, _reissueRevoked, _inheritAttempts);
+
+    private async Task PreviewAsync()
+    {
+        if (_busy || !CanAssign) return;
+        _busy = true; _error = null;
+        try
+        {
+            var result = await Assignments.PreviewAsync(TaskId, Target());
+            if (!result.IsSuccess) { _error = result.Error ?? "下发预览失败。"; return; }
+            _preview = result.Value;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "生成考试下发预览失败"); _error = "下发预览失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private async Task AssignAsync()
+    {
+        if (_busy || !CanAssign || _preview is null || _preview.EligibleCount == 0) return;
+        _busy = true; _error = null;
+        try
+        {
+            _assignMetadata ??= ExamAudit.Create("exam-assignment-create", TaskId);
+            var result = await Assignments.AssignAsync(TaskId, new AssignExamInput(Target(), TaskRowVersion), _assignMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "任务下发失败。"; return; }
+            Navigation.NavigateTo($"/exams/batches/{result.Value!.BatchId}", forceLoad: true);
+        }
+        catch (Exception ex) { Logger.LogError(ex, "确认考试下发失败"); _error = "任务下发失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _usersLoadVersion++;
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

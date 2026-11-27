@@ -1,0 +1,73 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@if (IsOpen)
+{
+    <div class="modal-backdrop">
+        <section id="@_id" class="modal-panel @(Wide ? "modal-panel-wide" : null)" role="dialog" aria-modal="true" aria-labelledby="@(_id)-title" tabindex="-1">
+            <header class="modal-header">
+                <h2 id="@(_id)-title" class="modal-title">@Title</h2>
+                <button type="button" class="icon-button" aria-label="关闭对话框" @onclick="CloseAsync"><Icon Name="close" /></button>
+            </header>
+            <div class="modal-body">@ChildContent</div>
+            @if (FooterContent is not null)
+            {
+                <footer class="modal-footer">@FooterContent</footer>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public bool Wide { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? FooterContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly string _id = $"examops-modal-{Guid.NewGuid():N}";
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<Modal>? _dotNetRef;
+    private bool _initialized;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (IsOpen && !_initialized)
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Shared/Modal.razor.js");
+            _dotNetRef ??= DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("init", _id, _dotNetRef);
+            _initialized = true;
+        }
+        else if (!IsOpen && _initialized)
+        {
+            await DestroyAsync();
+        }
+    }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+
+    [JSInvokable]
+    public Task CloseFromKeyboard() => CloseAsync();
+
+    private async Task DestroyAsync()
+    {
+        if (_module is not null) await _module.InvokeVoidAsync("destroy", _id);
+        _initialized = false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_module is not null) await _module.InvokeVoidAsync("destroy", _id);
+        }
+        catch (JSDisconnectedException)
+        {
+            _module = null;
+        }
+        if (_module is not null) await _module.DisposeAsync();
+        _dotNetRef?.Dispose();
+    }
+}

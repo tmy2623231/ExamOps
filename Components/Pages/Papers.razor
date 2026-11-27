@@ -1,0 +1,191 @@
+@page "/content/papers"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.PaperRead)]
+@inject PaperService Service
+@inject OrganizationService Organization
+@inject ILogger<Papers> Logger
+@implements IAsyncDisposable
+
+<PageHeader Title="组卷" Description="管理试卷版本、固定选题与随机抽题蓝图，发布前可实时核对总分与题目校验。">
+    <Actions>
+        <AuthorizeView Policy="@Permissions.PaperCreate">
+            <a class="btn btn-primary" href="/content/papers/new"><Icon Name="plus" />新建试卷</a>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+@if (!string.IsNullOrWhiteSpace(_filterError)) { <Alert Kind="warning" Message="@_filterError" /><button type="button" class="btn btn-secondary filter-retry" @onclick="LoadFilterOptionsAsync"><Icon Name="refresh" />重试部门选项</button> }
+
+<section class="card paper-filters" aria-label="试卷筛选">
+    <div class="filter-field filter-keyword">
+        <label for="paper-keyword">搜索试卷名称</label>
+        <input id="paper-keyword" class="input" type="search" placeholder="输入关键词" value="@_keyword" @oninput="OnKeywordInput" autocomplete="off" />
+    </div>
+    <div class="filter-field">
+        <label for="paper-department">部门</label>
+        <select id="paper-department" class="select" @bind="_departmentId" @bind:after="FiltersChangedAsync">
+            <option value="">全部部门</option>
+            @foreach (var department in _departments) { <option value="@department.Id">@department.Name@(department.IsActive ? "" : "（已停用）")</option> }
+        </select>
+    </div>
+    <div class="filter-field">
+        <label for="paper-status">状态</label>
+        <select id="paper-status" class="select" @bind="_status" @bind:after="FiltersChangedAsync">
+            <option value="">全部状态</option>
+            <option value="Draft">草稿</option>
+            <option value="Published">已发布</option>
+            <option value="Archived">已归档</option>
+        </select>
+    </div>
+    <div class="filter-actions"><button type="button" class="btn btn-secondary" @onclick="ClearAsync"><Icon Name="refresh" />重置筛选</button></div>
+</section>
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载试卷…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body paper-error">
+        <Alert Kind="danger" Message="@_loadError" />
+        <button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button>
+    </section>
+}
+else if (_result is null || _result.Items.Count == 0)
+{
+    <section class="card">
+        <EmptyState Title="没有符合条件的试卷" Description="调整筛选条件，或新建一份试卷开始组卷。" IconName="paper">
+            <Action>
+                @if (string.IsNullOrWhiteSpace(_keyword) && !_departmentId.HasValue && string.IsNullOrWhiteSpace(_status))
+                {
+                    <AuthorizeView Policy="@Permissions.PaperCreate"><a class="btn btn-primary" href="/content/papers/new"><Icon Name="plus" />新建试卷</a></AuthorizeView>
+                }
+                else
+                {
+                    <button type="button" class="btn btn-secondary" @onclick="ClearAsync">清除筛选</button>
+                }
+            </Action>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="paper-list" aria-label="试卷列表">
+        @foreach (var paper in _result.Items)
+        {
+            <article class="card paper-card">
+                <div class="paper-card-heading">
+                    <div class="paper-card-title">
+                        <span class="paper-icon" aria-hidden="true"><Icon Name="paper" /></span>
+                        <div><h2><a href="/content/papers/@paper.Id/edit">@paper.Title</a></h2><p>@paper.DepartmentName</p></div>
+                    </div>
+                    <span class="badge @StatusClass(paper.Status)">@StatusLabel(paper.Status)</span>
+                </div>
+                <dl class="paper-facts">
+                    <div><dt>当前版本</dt><dd>@(paper.CurrentVersionId.HasValue ? $"v{paper.VersionNo}" : "—")</dd></div>
+                    <div><dt>总分</dt><dd>@paper.TotalScore.ToString("0.##")</dd></div>
+                    <div><dt>时长</dt><dd>@paper.DurationMinutes 分钟</dd></div>
+                    <div><dt>小节 / 题目</dt><dd>@paper.SectionCount / @paper.QuestionCount</dd></div>
+                </dl>
+                <footer class="paper-card-footer">
+                    <span>更新于 @TimeFormat.Display(paper.UpdatedAt)</span>
+                    <a class="btn btn-secondary" href="/content/papers/@paper.Id/edit"><Icon Name="edit" />查看 / 编辑</a>
+                </footer>
+            </article>
+        }
+    </section>
+    <section class="card">
+        <Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" />
+    </section>
+}
+
+@code {
+    private PagedResult<PaperRow>? _result;
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private CancellationTokenSource? _searchCancellation;
+    private string _keyword = "";
+    private long? _departmentId;
+    private string _status = "";
+    private int _pageIndex = 1;
+    private int _loadVersion;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private string? _loadError;
+    private string? _filterError;
+    private string? _message;
+    private string _messageKind = "info";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFilterOptionsAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadFilterOptionsAsync()
+    {
+        _filterError = null;
+        try { _departments = await Organization.GetDepartmentsAsync(); }
+        catch (Exception ex) { Logger.LogError(ex, "加载组卷部门选项失败"); _filterError = "部门选项加载失败，仍可按名称和状态筛选试卷。"; }
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            _result = await Service.GetPagedAsync(new PaperQuery(
+                string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(),
+                _departmentId, string.IsNullOrWhiteSpace(_status) ? null : _status, _pageIndex, PageSize));
+            if (version != _loadVersion) return;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载试卷列表失败"); _loadError = "试卷列表加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task OnKeywordInput(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            _pageIndex = 1;
+            await LoadAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private Task FiltersChangedAsync() { _pageIndex = 1; return LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+
+    private async Task ClearAsync()
+    {
+        _searchCancellation?.Cancel();
+        _keyword = "";
+        _departmentId = null;
+        _status = "";
+        _pageIndex = 1;
+        _message = null;
+        await LoadAsync();
+    }
+
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+
+    public ValueTask DisposeAsync()
+    {
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,280 @@
+@page "/exams/tasks/new"
+@page "/exams/tasks/{Id:long}"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.ExamTaskRead)]
+@inject ExamTaskService Service
+@inject DataScopeService Scope
+@inject ICurrentUser CurrentUser
+@inject NavigationManager Navigation
+@inject ILogger<ExamTaskDetail> Logger
+@inject IClock Clock
+@using ExamOps.Model.Enums
+@using ExamTaskDetailDto = ExamOps.Model.Dtos.ExamTaskDetail
+
+<div class="exam-page">
+    @if (Id.HasValue) { <a class="exam-back" href="/exams/tasks"><Icon Name="arrow-left" />返回考试任务</a> }
+    <PageHeader Title="@(Id is null ? "新建考试" : _detail?.Title ?? "考试详情")" Description="@(Id is null ? "创建草稿并配置试卷、时间窗和成绩规则。" : "查看任务全貌，执行生命周期操作并管理下发与工作人员。")">
+        <Actions>
+            @if (Id.HasValue && _detail is not null)
+            {
+                <button type="button" class="btn btn-secondary" @onclick="() => _shareOpen = true">扫码分享</button>
+                <AuthorizeView Policy="@Permissions.ExamTaskCreate"><a class="btn btn-secondary" href="/exams/quick-publish?fromTaskId=@_detail.Id">复制重发</a></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ExamAssignmentRead"><a class="btn btn-secondary" href="/exams/assignments?taskId=@_detail.Id"><Icon Name="users" />分配列表</a></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ExamResultPublish"><a class="btn btn-secondary" href="/exams/publication?taskId=@_detail.Id"><Icon Name="check" />成绩公布</a></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ReportRead"><a class="btn btn-secondary" href="/exams/reports?taskId=@_detail.Id"><Icon Name="grid" />考试报表</a></AuthorizeView>
+                @if (_detail.Status == ExamTaskStatus.Draft && _canUpdate) { <button type="button" class="btn btn-secondary" @onclick="ToggleEditor"><Icon Name="edit" />@(_editing ? "取消编辑" : "编辑草稿")</button> }
+            }
+        </Actions>
+    </PageHeader>
+
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载考试任务…</div>
+    }
+    else if (!Id.HasValue && !_canCreate)
+    {
+        <section class="card"><EmptyState Title="没有新建考试权限" Description="当前账号没有考试任务创建权限，请联系组织管理员。" IconName="paper"><Action><a class="btn btn-secondary" href="/exams/tasks">返回任务列表</a></Action></EmptyState></section>
+    }
+    else if (Id.HasValue && _detail is null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@(_loadError ?? "考试任务不存在或已超出当前数据范围。")" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button></section>
+    }
+    else if (Id is null || _editing)
+    {
+        <ExamTaskForm @ref="_form" @key="Id" IsCreate="@(Id is null)" Detail="_detail" Busy="_busy" Error="@_formError" Saved="SaveAsync" />
+    }
+    else if (_detail is not null)
+    {
+        <div class="exam-detail-grid">
+            <div class="exam-stack">
+                <section class="card">
+                    <header class="exam-section-head"><div><h2>任务信息</h2><p>@_detail.Code · @_detail.DepartmentName</p></div><span class="badge @ExamLabels.BadgeClass(_detail.Status)">@ExamLabels.TaskStatus(_detail.Status)</span></header>
+                    <dl class="exam-facts">
+                        <div><dt>试卷</dt><dd>@(_detail.PaperTitle ?? "未选择")</dd></div>
+                        <div><dt>考试日期</dt><dd>@(_detail.ExamDate?.ToString("yyyy-MM-dd") ?? "未指定")</dd></div>
+                        <div><dt>开放时间</dt><dd>@TimeFormat.Display(_detail.AvailableFrom)</dd></div>
+                        <div><dt>结束时间</dt><dd>@TimeFormat.Display(_detail.AvailableTo)</dd></div>
+                        <div><dt>时长 / 次数</dt><dd>@_detail.DurationMinutes 分钟 / @_detail.AttemptLimit 次</dd></div>
+                        <div><dt>及格分</dt><dd>@(_detail.PassScore?.ToString("0.##") ?? "未设置")</dd></div>
+                        <div><dt>成绩策略</dt><dd>@ExamLabels.ScorePolicy(_detail.ScorePolicy)</dd></div>
+                        <div><dt>成绩公布</dt><dd>@ExamLabels.ResultPolicy(_detail.ResultReleasePolicy)</dd></div>
+                        <div><dt>结果状态</dt><dd>@ExamLabels.ResultStatus(_detail.ResultStatus)</dd></div>
+                        <div><dt>重考审批</dt><dd>@ExamLabels.RetakeApproval(_detail.RetakeApproval)</dd></div>
+                        <div><dt>重考冷却</dt><dd>@_detail.RetakeCooldownMinutes 分钟</dd></div>
+                        <div><dt>超时成绩</dt><dd>@ExamLabels.LatePolicy(_detail.LateScorePolicy)</dd></div>
+                        <div><dt>安排 / 作答中</dt><dd>@_detail.AssignmentCount / @_detail.InProgressCount</dd></div>
+                    </dl>
+                    @if (!string.IsNullOrWhiteSpace(_detail.Description)) { <p class="exam-inline-note exam-description">@_detail.Description</p> }
+                </section>
+
+                <section class="card">
+                    <header class="exam-section-head"><div><h2>生命周期</h2><p>发布、关闭和归档均需再次确认；数据变更后会自动刷新。</p></div></header>
+                    <div class="card-body">
+                        @if (!string.IsNullOrWhiteSpace(ActionHint())) { <Alert Kind="info" Message="@ActionHint()" /> }
+                        <div class="exam-actions">
+                            <button type="button" class="btn btn-primary" disabled="@(!CanAct("Publish"))" @onclick='() => RequestAction("Publish")'><Icon Name="check" />发布</button>
+                            <button type="button" class="btn btn-secondary" disabled="@(!CanAct("Close"))" @onclick='() => RequestAction("Close")'>关闭</button>
+                            <button type="button" class="btn btn-secondary" disabled="@(!CanAct("Reopen"))" @onclick='() => RequestAction("Reopen")'><Icon Name="refresh" />重开</button>
+                            <button type="button" class="btn btn-secondary" disabled="@(!CanAct("Archive"))" @onclick='() => RequestAction("Archive")'><Icon Name="archive" />归档</button>
+                            <button type="button" class="btn btn-danger" disabled="@(!CanAct("Revoke"))" @onclick='() => RequestAction("Revoke")'>撤回任务</button>
+                        </div>
+                    </div>
+                </section>
+
+                @if (_detail.Status == ExamTaskStatus.Published)
+                {
+                    <TaskAssignmentPanel TaskId="_detail.Id" TaskRowVersion="_detail.RowVersion" DepartmentId="_detail.DepartmentId" CanAssign="_canAssign" />
+                }
+                else
+                {
+                    <div class="exam-disabled-note"><Icon Name="alert" /><p>任务下发仅对已发布且未关闭的任务开放。当前状态为“@ExamLabels.TaskStatus(_detail.Status)”。</p></div>
+                }
+            </div>
+            <aside class="exam-stack">
+                <section class="card">
+                    <header class="exam-section-head"><h2>状态记录</h2></header>
+                    <dl class="exam-facts exam-facts--single">
+                        <div><dt>创建时间</dt><dd>@TimeFormat.Display(_detail.CreatedAt)</dd></div>
+                        <div><dt>发布时间</dt><dd>@TimeFormat.Display(_detail.PublishedAt)</dd></div>
+                        <div><dt>关闭时间</dt><dd>@TimeFormat.Display(_detail.ClosedAt)</dd></div>
+                        <div><dt>撤回时间</dt><dd>@TimeFormat.Display(_detail.RevokedAt)</dd></div>
+                        <div><dt>归档时间</dt><dd>@TimeFormat.Display(_detail.ArchivedAt)</dd></div>
+                    </dl>
+                </section>
+                <TaskStaffPanel TaskId="_detail.Id" DepartmentId="_detail.DepartmentId" CanManage="_canUpdate" />
+            </aside>
+        </div>
+    }
+</div>
+
+<Modal IsOpen="_confirmOpen" Title="@_confirmTitle" OnClose="CloseConfirm">
+    <ChildContent>
+        <p class="exam-confirm-copy">@_confirmMessage</p>
+        @if (_action == "Revoke")
+        {
+            <div class="field"><label for="task-revoke-reason">撤回原因</label><textarea id="task-revoke-reason" class="textarea" rows="3" @bind="_reason" @bind:after="ResetActionMetadata" minlength="10" maxlength="1000" required></textarea><span class="field-hint">至少 10 个字符，将写入审计日志。</span></div>
+            <div class="field"><label for="task-revoke-title">输入任务名称确认</label><input id="task-revoke-title" class="input" @bind="_confirmationTitle" @bind:after="ResetActionMetadata" autocomplete="off" required /></div>
+            <div class="field"><label for="task-revoke-policy">进行中答卷处理</label><select id="task-revoke-policy" class="select" @bind="_policy" @bind:after="ResetActionMetadata"><option value="KeepScore">@ExamLabels.RevocationPolicy(RevocationScope.KeepScore)</option><option value="VoidScore">@ExamLabels.RevocationPolicy(RevocationScope.VoidScore)</option><option value="ForceSubmit">@ExamLabels.RevocationPolicy(RevocationScope.ForceSubmit)</option><option value="VoidAttempt">@ExamLabels.RevocationPolicy(RevocationScope.VoidAttempt)</option></select></div>
+            <Alert Kind="warning" Message="该操作会撤回任务下全部有效安排，且不能撤销。请确认已评估对考生的影响。" />
+        }
+        @if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseConfirm">取消</button><button type="button" class="btn @(_action == "Revoke" ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmActionAsync">@(_busy ? "正在处理…" : "确认操作")</button></FooterContent>
+</Modal>
+
+@if (_detail is not null)
+{
+    <ExamShareModal IsOpen="_shareOpen" TaskId="_detail.Id" TaskTitle="@_detail.Title" OnClose="() => _shareOpen = false" />
+}
+
+@code {
+    [Parameter] public long? Id { get; set; }
+    [SupplyParameterFromQuery(Name = "edit")] public bool EditRequested { get; set; }
+
+    private ExamTaskDetailDto? _detail;
+    private ExamTaskForm? _form;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _editing;
+    private bool _shareOpen;
+    private bool _canCreate;
+    private bool _canUpdate;
+    private bool _canPublish;
+    private bool _canClose;
+    private bool _canRevoke;
+    private bool _canAssign;
+    private bool _confirmOpen;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private string _reason = "";
+    private string _confirmationTitle = "";
+    private string _policy = RevocationScope.KeepScore;
+    private string _action = "";
+    private string? _loadError;
+    private string? _formError;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _createMetadata;
+    private ApiAuditMetadata? _actionMetadata;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _loadError = null; _formError = null;
+        try
+        {
+            await CurrentUser.LoadAsync();
+            _canCreate = CurrentUser.HasPermission(Permissions.ExamTaskCreate);
+            if (Id is null) return;
+            _detail = await Service.GetDetailAsync(Id.Value);
+            if (_detail is null) { _loadError = "考试任务不存在或已超出当前数据范围。"; return; }
+            _canUpdate = CurrentUser.HasPermission(Permissions.ExamTaskUpdate) && await Scope.CanAccessTaskAsync(_detail.Id, _detail.DepartmentId, Permissions.ExamTaskUpdate);
+            _canPublish = CurrentUser.HasPermission(Permissions.ExamTaskPublish) && await Scope.CanAccessTaskAsync(_detail.Id, _detail.DepartmentId, Permissions.ExamTaskPublish);
+            _canClose = CurrentUser.HasPermission(Permissions.ExamTaskClose) && await Scope.CanAccessTaskAsync(_detail.Id, _detail.DepartmentId, Permissions.ExamTaskClose);
+            _canRevoke = CurrentUser.HasPermission(Permissions.ExamTaskRevoke) && await Scope.CanAccessTaskAsync(_detail.Id, _detail.DepartmentId, Permissions.ExamTaskRevoke);
+            _canAssign = CurrentUser.HasPermission(Permissions.ExamAssignmentCreate) && await Scope.CanAccessTaskAsync(_detail.Id, _detail.DepartmentId, Permissions.ExamAssignmentCreate);
+            _editing = EditRequested && _detail.Status == ExamTaskStatus.Draft && _canUpdate;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载考试任务详情失败"); _loadError = "考试任务详情加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    private void ToggleEditor() { _editing = !_editing; _formError = null; }
+
+    private async Task SaveAsync(ExamTaskFormModel model)
+    {
+        if (_busy || _form is null) return;
+        _busy = true; _formError = null;
+        try
+        {
+            if (Id is null)
+            {
+                _createMetadata ??= ExamAudit.Create("exam-task-create", 0);
+                var result = await Service.CreateAsync(_form.CreateInput(), _createMetadata);
+                if (!result.IsSuccess) { _formError = result.Error ?? "创建考试草稿失败。"; return; }
+                Navigation.NavigateTo($"/exams/tasks/{result.Value!.TaskId}", forceLoad: true);
+            }
+            else
+            {
+                var result = await Service.UpdateDraftAsync(Id.Value, _form.UpdateInput(), ExamAudit.Create("exam-task-update", Id.Value));
+                if (!result.IsSuccess) { _formError = result.Error ?? "保存考试草稿失败。"; return; }
+                _message = "考试草稿已保存。"; _messageKind = "success"; _editing = false; EditRequested = false;
+                await LoadAsync();
+            }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "保存考试任务失败"); _formError = "保存失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private bool CanAct(string action) => _detail is null ? false : action switch
+    {
+        "Publish" => _canPublish && _detail.Status == ExamTaskStatus.Draft && _detail.PaperVersionId.HasValue,
+        "Close" => _canClose && _detail.Status == ExamTaskStatus.Published,
+        "Reopen" => _canPublish && _detail.Status == ExamTaskStatus.Closed && _detail.AvailableTo > TimeFormat.ToLocal(Clock.UtcNow),
+        "Archive" => _canUpdate && _detail.Status is ExamTaskStatus.Draft or ExamTaskStatus.Closed or ExamTaskStatus.Revoked && _detail.InProgressCount == 0 && !(_detail.Status == ExamTaskStatus.Draft && _detail.AssignmentCount > 0),
+        "Revoke" => _canRevoke && _detail.Status == ExamTaskStatus.Published,
+        _ => false
+    };
+
+    private string ActionHint()
+    {
+        if (_detail is null) return "";
+        if (_detail.Status == ExamTaskStatus.Draft && !_detail.PaperVersionId.HasValue) return "发布前请先编辑草稿并选择已发布试卷版本。";
+        if (_detail.Status == ExamTaskStatus.Draft && _detail.AssignmentCount > 0) return "已有下发安排的草稿不能归档。";
+        if (_detail.InProgressCount > 0) return "仍有考生正在作答，暂时不能归档。";
+        if (!_canUpdate && !_canPublish && !_canClose && !_canRevoke) return "当前账号仅有考试任务查看权限，生命周期操作不可用。";
+        return "不可用的操作由任务状态、进行中答卷或当前权限限制。";
+    }
+
+    private void RequestAction(string action)
+    {
+        if (!CanAct(action) || _detail is null) return;
+        _action = action; _reason = ""; _confirmationTitle = ""; _policy = RevocationScope.KeepScore; _formError = null;
+        _actionMetadata = action == "Revoke" ? null : ExamAudit.Create($"exam-task-{action.ToLowerInvariant()}", _detail.Id);
+        _confirmTitle = action switch { "Publish" => "确认发布考试", "Close" => "确认关闭考试", "Reopen" => "确认重开考试", "Archive" => "确认归档考试", "Revoke" => "确认撤回考试", _ => "确认操作" };
+        _confirmMessage = action switch
+        {
+            "Publish" => $"发布“{_detail.Title}”后，即可向考生下发。请确认试卷版本、开放时间和成绩规则均正确。",
+            "Close" => "关闭后未开始的安排将过期，考生不能新开或继续开始考试；已经开始的答卷仍按原截止时间处理。",
+            "Reopen" => "重开仅恢复任务发布状态，已过期的考生安排不会自动恢复。请确认考试时间窗尚未结束。",
+            "Archive" => "归档后任务只读，不能继续发布、关闭、重开或撤回。",
+            "Revoke" => $"将撤回“{_detail.Title}”下全部有效安排，包括尚未开始和正在进行的考试。",
+            _ => ""
+        };
+        _confirmOpen = true;
+    }
+
+    private void CloseConfirm() { if (!_busy) { _confirmOpen = false; _formError = null; } }
+    private void ResetActionMetadata() => _actionMetadata = null;
+
+    private async Task ConfirmActionAsync()
+    {
+        if (_busy || _detail is null || !CanAct(_action)) return;
+        if (_action == "Revoke")
+        {
+            if (_reason.Trim().Length < 10) { _formError = "撤回原因至少需要 10 个字符。"; return; }
+            if (_confirmationTitle.Trim() != _detail.Title.Trim()) { _formError = "输入的任务名称与当前任务不一致。"; return; }
+        }
+        _busy = true; _formError = null;
+        try
+        {
+            _actionMetadata ??= ExamAudit.Create("exam-task-revoke", _detail.Id);
+            Result result = _action switch
+            {
+                "Publish" => await Service.PublishAsync(_detail.Id, new ExamTaskActionInput(_detail.RowVersion), _actionMetadata),
+                "Close" => await Service.CloseAsync(_detail.Id, new ExamTaskActionInput(_detail.RowVersion), _actionMetadata),
+                "Reopen" => await Service.ReopenAsync(_detail.Id, new ExamTaskActionInput(_detail.RowVersion), _actionMetadata),
+                "Archive" => await Service.ArchiveAsync(_detail.Id, new ExamTaskActionInput(_detail.RowVersion), _actionMetadata),
+                "Revoke" => await Service.RevokeAsync(_detail.Id, new RevokeExamTaskInput(_detail.RowVersion, _reason.Trim(), _confirmationTitle.Trim(), _policy), _actionMetadata),
+                _ => Result.Fail("不支持的操作", "INVALID_ACTION")
+            };
+            if (!result.IsSuccess) { _formError = result.Error ?? "操作失败。"; return; }
+            _confirmOpen = false; _message = "考试任务状态已更新。"; _messageKind = "success"; _actionMetadata = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "执行考试任务状态操作失败"); _formError = "操作失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+}

@@ -1,0 +1,12 @@
+.bank-list .table { min-width: 780px; }
+.bank-list .table tr.is-selected { background: var(--color-primary-soft); }
+.bank-name-button { min-height: 44px; padding: 0; color: var(--color-primary); text-align: left; background: transparent; border: 0; cursor: pointer; }
+.bank-name-button:hover { color: var(--color-primary-hover); text-decoration: underline; }
+.table-actions .btn { min-height: 44px; }
+.bank-workspace { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .8fr); align-items: start; gap: var(--space-5); margin-top: var(--space-5); }
+.bank-detail, .question-tag-panel { min-width: 0; }
+.bank-detail .card-header { align-items: flex-start; }
+.bank-detail .card-header .field-hint { margin: var(--space-1) 0 0; }
+.loading-state.compact { min-height: 96px; }
+@media (max-width: 1000px) { .bank-workspace { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) { .bank-detail .card-header { align-items: stretch; flex-direction: column; } }

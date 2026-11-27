@@ -1,0 +1,300 @@
+<article class="card section-editor" aria-labelledby="section-title-@Section.Id">
+    <header class="card-header section-heading">
+        <div><span class="section-number">@Section.SortOrder</span><h2 id="section-title-@Section.Id" class="card-title">@(string.IsNullOrWhiteSpace(Section.Title) ? "未命名小节" : Section.Title)</h2></div>
+        @if (!Disabled)
+        {
+            <div class="section-tools">
+                <button type="button" class="btn btn-ghost btn-sm" aria-label="上移小节" title="上移小节" disabled="@(Section.SortOrder <= 1 || Busy)" @onclick="MoveUp"><Icon Name="arrow-up" /></button>
+                <button type="button" class="btn btn-ghost btn-sm" aria-label="下移小节" title="下移小节" disabled="@MoveDownDisabled" @onclick="MoveDown"><Icon Name="arrow-down" /></button>
+                <button type="button" class="btn btn-ghost btn-sm section-delete" disabled="@Busy" @onclick="Remove"><Icon Name="trash" />删除</button>
+            </div>
+        }
+    </header>
+    <div class="card-body">
+        <div class="form-grid section-fields">
+            <div class="field"><label for="section-name-@Section.Id">小节名称</label><input id="section-name-@Section.Id" class="input" value="@Section.Title" maxlength="128" disabled="@Disabled" @onchange="TitleChanged" autocomplete="off" /></div>
+            <div class="field"><label for="section-mode-@Section.Id">组题方式</label><select id="section-mode-@Section.Id" class="select" value="@Section.SelectionMode" disabled="@Disabled" @onchange="ModeChanged"><option value="Fixed">固定题目</option><option value="Random">随机抽题</option></select></div>
+            <div class="field"><label for="section-score-@Section.Id">每题分值</label><input id="section-score-@Section.Id" class="input" type="number" min="0.01" max="1000" step="0.01" inputmode="decimal" @bind="_scoreText" disabled="@Disabled" @bind:after="ScoreChanged" /><span class="field-hint">保存后固定题与候选题统一使用此分值。</span></div>
+            @if (Section.SelectionMode == "Random")
+            {
+                <div class="field"><label for="section-pick-@Section.Id">抽题数</label><input id="section-pick-@Section.Id" class="input" type="number" min="1" max="200" step="1" inputmode="numeric" @bind="_pickText" disabled="@Disabled" @bind:after="PickChanged" /></div>
+                <div class="field"><label for="section-bank-@Section.Id">抽题题库</label><select id="section-bank-@Section.Id" class="select" value="@(Section.BankId?.ToString() ?? "")" disabled="@Disabled" @onchange="BankChanged"><option value="">请选择题库</option>@foreach (var bank in Banks.Where(x => x.Status == "Active" || x.Id == Section.BankId)) { <option value="@bank.Id" disabled="@(bank.Status != "Active")">@bank.Name@(bank.Status == "Active" ? "" : "（已停用）")</option> }</select></div>
+                <div class="field">
+                    <label for="section-category-@Section.Id">分类（可选）</label>
+                    <select id="section-category-@Section.Id" class="select" value="@(Section.CategoryId?.ToString() ?? "")" disabled="@(Disabled || !Section.BankId.HasValue || _categoriesLoading)" @onchange="CategoryChanged">
+                        <option value="">全部分类</option>
+                        @foreach (var category in _categories) { <option value="@category.Id" disabled="@(!category.IsActive)">@category.Name@(category.IsActive ? "" : "（已停用）")</option> }
+                    </select>
+                    @if (_categoryError is not null) { <span class="field-error">@_categoryError</span><button type="button" class="btn btn-secondary btn-sm retry-inline" @onclick="LoadCategoriesAsync"><Icon Name="refresh" />重试分类</button> }
+                </div>
+                <div class="field"><label for="section-type-@Section.Id">题型（可选）</label><select id="section-type-@Section.Id" class="select" value="@(Section.QuestionType ?? "")" disabled="@Disabled" @onchange="TypeChanged"><option value="">全部题型</option><option value="SingleChoice">单选题</option><option value="MultipleChoice">多选题</option><option value="TrueFalse">判断题</option></select></div>
+                <div class="field"><label for="section-difficulty-@Section.Id">难度（可选）</label><select id="section-difficulty-@Section.Id" class="select" value="@(Section.Difficulty ?? "")" disabled="@Disabled" @onchange="DifficultyChanged"><option value="">全部难度</option><option value="Easy">简单</option><option value="Medium">中等</option><option value="Hard">困难</option></select></div>
+            }
+        </div>
+
+        @if (Section.SelectionMode == "Random")
+        {
+            <div class="pool-summary">
+                <div><strong>@Questions.Count(x => x.IsPool)</strong><span>当前候选题</span></div>
+                <div><strong>@PersistedPoolCount</strong><span>已持久化 pool</span></div>
+                <div><strong>@Section.PickCount.GetValueOrDefault()</strong><span>计划抽取</span></div>
+            </div>
+            @if (Questions.Count(x => x.IsPool) < Section.PickCount.GetValueOrDefault()) { <Alert Kind="warning" Message="候选题数量不足，请先保存蓝图，再按蓝图生成候选题。" /> }
+            @if (OverlapCount > 0) { <Alert Kind="warning" Message="@($"有 {OverlapCount} 道候选题与其他随机小节重叠，实际抽题时会自动去重。")" /> }
+            @if (!Disabled)
+            {
+                <div class="blueprint-action">
+                    <button type="button" class="btn btn-secondary" disabled="@(!CanGenerate || Busy)" @onclick="Generate"><Icon Name="refresh" />按蓝图生成候选题</button>
+                    <span class="field-hint">@(CanGenerate ? "将覆盖本小节已持久化的 pool；操作后会重新加载详情。" : "请先保存当前蓝图，且确保题库与抽题数有效。")</span>
+                </div>
+            }
+        }
+        else
+        {
+            <div class="fixed-picker">
+                <div class="subsection-heading"><h3>候选题库</h3><span class="field-hint">已选 @Questions.Count(x => !x.IsPool) 道；选择暂存本地，保存后统一生效。</span></div>
+                <div class="candidate-filters">
+                    <div class="field"><label for="candidate-keyword-@Section.Id">搜索题干或编码</label><input id="candidate-keyword-@Section.Id" class="input" type="search" value="@_keyword" placeholder="输入关键词" @oninput="OnKeywordInput" autocomplete="off" disabled="@(!CanSelect || _candidateLoading)" /></div>
+                    <div class="field"><label for="candidate-bank-@Section.Id">题库</label><select id="candidate-bank-@Section.Id" class="select" @bind="_candidateBankId" @bind:after="CandidateBankChangedAsync" disabled="@(!CanSelect || _candidateLoading)"><option value="">全部题库</option>@foreach (var bank in Banks.Where(x => x.Status == "Active")) { <option value="@bank.Id">@bank.Name</option> }</select></div>
+                    <div class="field">
+                        <label for="candidate-category-@Section.Id">分类</label>
+                        <select id="candidate-category-@Section.Id" class="select" @bind="_candidateCategoryId" @bind:after="LoadCandidatesAsync" disabled="@(!CanSelect || !_candidateBankId.HasValue || _categoriesLoading)">
+                            <option value="">@(_candidateBankId.HasValue ? "全部分类" : "请先选择题库")</option>
+                            @foreach (var category in _categories) { <option value="@category.Id" disabled="@(!category.IsActive)">@category.Name@(category.IsActive ? "" : "（已停用）")</option> }
+                        </select>
+                        @if (_categoryError is not null) { <button type="button" class="btn btn-secondary btn-sm retry-inline" @onclick="LoadCategoriesAsync"><Icon Name="refresh" />重试分类</button> }
+                    </div>
+                </div>
+                @if (!CanSelect)
+                {
+                    <Alert Kind="info" Message="当前账号缺少题目读取权限或只读访问，不能搜索候选题；已选题目仍可查看。" />
+                }
+                else if (_candidateLoading)
+                {
+                    <div class="candidate-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载候选题…</div>
+                }
+                else if (_candidateError is not null)
+                {
+                    <div class="candidate-state"><Alert Kind="danger" Message="@_candidateError" /><button type="button" class="btn btn-secondary" @onclick="LoadCandidatesAsync"><Icon Name="refresh" />重试候选题</button></div>
+                }
+                else if (_candidates is null || _candidates.Items.Count == 0)
+                {
+                    <div class="candidate-state"><p class="muted">没有符合条件的候选题，请调整题库、分类或关键词。</p><button type="button" class="btn btn-secondary" @onclick="LoadCandidatesAsync">重新查询</button></div>
+                }
+                else
+                {
+                    <div class="candidate-list">
+                        @foreach (var candidate in _candidates.Items)
+                        {
+                            var selected = Section.QuestionVersionIds.Contains(candidate.QuestionVersionId);
+                            <article class="candidate-row">
+                                <div class="candidate-copy">
+                                    <div class="candidate-meta"><span class="badge badge-neutral">@TypeLabel(candidate.Type)</span><span>@candidate.BankName</span><span>@(string.IsNullOrWhiteSpace(candidate.ExternalCode) ? $"题目 #{candidate.QuestionId}" : candidate.ExternalCode)</span></div>
+                                    <p>@candidate.Stem</p>
+                                </div>
+                                <button type="button" class="btn @(selected ? "btn-ghost" : "btn-secondary")" disabled="@(selected || Busy || Disabled)" @onclick="() => Select(candidate)"><Icon Name="@(selected ? "check" : "plus")" />@(selected ? "已选" : "选择")</button>
+                            </article>
+                        }
+                    </div>
+                    <Pagination TotalCount="_candidates.TotalCount" PageIndex="_candidates.PageIndex" PageSize="CandidatePageSize" PageChanged="CandidatePageChangedAsync" />
+                }
+            </div>
+        }
+
+        <div class="subsection-heading question-list-heading"><h3>@(Section.SelectionMode == "Random" ? "候选题 pool" : "已选题目")</h3><span class="field-hint">@Questions.Count 道</span></div>
+        @if (Questions.Count == 0)
+        {
+            <p class="question-empty muted">@(Section.SelectionMode == "Random" ? "尚未生成候选题 pool。" : "尚未选择题目，可从上方候选题库添加。")</p>
+        }
+        else
+        {
+            <div class="selected-questions">
+                <Virtualize Items="Questions.OrderBy(x => x.SortOrder).ToArray()" ItemSize="96" OverscanCount="5" Context="question">
+                    <article class="selected-question">
+                        <div class="selected-question-copy"><div class="candidate-meta"><span class="badge badge-neutral">@TypeLabel(question.Type)</span><span>@question.Score.ToString("0.##") 分</span><span>@question.BankName</span></div><p>@question.Stem</p></div>
+                        @if (!Disabled) { <button type="button" class="btn btn-ghost btn-sm" aria-label="移除题目：@question.Stem" disabled="@Busy" @onclick="() => RemoveQuestion(question)"><Icon Name="trash" />移除</button> }
+                    </article>
+                </Virtualize>
+            </div>
+        }
+    </div>
+</article>
+
+@code {
+    [Parameter] public PaperSectionInput Section { get; set; } = new(0, "", 1, "Fixed", null, 1m, null, null, null, null, []);
+    [Parameter] public IReadOnlyList<PaperQuestionRow> Questions { get; set; } = [];
+    [Parameter] public IReadOnlyList<QuestionBankRow> Banks { get; set; } = [];
+    [Parameter] public int PersistedPoolCount { get; set; }
+    [Parameter] public int OverlapCount { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool CanSelect { get; set; }
+    [Parameter] public bool CanGenerate { get; set; }
+    [Parameter] public bool MoveDownDisabled { get; set; }
+    [Parameter] public EventCallback<PaperSectionInput> Changed { get; set; }
+    [Parameter] public EventCallback<PaperCandidateSelection> QuestionSelected { get; set; }
+    [Parameter] public EventCallback<PaperQuestionRow> QuestionRemoved { get; set; }
+    [Parameter] public EventCallback MoveUp { get; set; }
+    [Parameter] public EventCallback MoveDown { get; set; }
+    [Parameter] public EventCallback Remove { get; set; }
+    [Parameter] public EventCallback Generate { get; set; }
+
+    [Inject] private PaperService Service { get; set; } = null!;
+    [Inject] private QuestionService QuestionService { get; set; } = null!;
+    [Inject] private ILogger<PaperSectionEditor> Logger { get; set; } = null!;
+
+    private const int CandidatePageSize = 10;
+    private string _scoreText = "1";
+    private string _pickText = "1";
+    private IReadOnlyList<QuestionCategoryRow> _categories = [];
+    private PagedResult<PaperCandidateRow>? _candidates;
+    private CancellationTokenSource? _searchCancellation;
+    private long? _candidateBankId;
+    private long? _candidateCategoryId;
+    private string _keyword = "";
+    private int _candidatePage = 1;
+    private int _candidateLoadVersion;
+    private int _categoryLoadVersion;
+    private long? _categoryBankId;
+    private bool _candidatesInitialized;
+    private bool _candidateLoading;
+    private bool _categoriesLoading;
+    private string? _candidateError;
+    private string? _categoryError;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _scoreText = Section.ScorePerQuestion.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        _pickText = Section.PickCount?.ToString() ?? "1";
+        var bankId = Section.SelectionMode == "Random" ? Section.BankId : _candidateBankId;
+        if (bankId != _categoryBankId)
+        {
+            _categoryBankId = bankId;
+            if (bankId.HasValue) await LoadCategoriesAsync();
+            else ClearCategories();
+        }
+        if (Section.SelectionMode == "Fixed" && !_candidatesInitialized && CanSelect)
+        {
+            _candidatesInitialized = true;
+            await LoadCandidatesAsync();
+        }
+    }
+
+    private Task NotifyChanged(PaperSectionInput section) => Changed.InvokeAsync(section);
+    private async Task TitleChanged(ChangeEventArgs args) => await NotifyChanged(Section with { Title = args.Value?.ToString() ?? "" });
+    private async Task ModeChanged(ChangeEventArgs args)
+    {
+        var mode = args.Value?.ToString() ?? "Fixed";
+        await NotifyChanged(mode == "Random"
+            ? Section with { SelectionMode = mode, PickCount = Section.PickCount ?? 1 }
+            : Section with { SelectionMode = mode, PickCount = null, BankId = null, CategoryId = null, QuestionType = null, Difficulty = null });
+    }
+    private async Task ScoreChanged()
+    {
+        if (decimal.TryParse(_scoreText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var score))
+            await NotifyChanged(Section with { ScorePerQuestion = score });
+    }
+    private async Task PickChanged()
+    {
+        if (int.TryParse(_pickText, out var pick)) await NotifyChanged(Section with { PickCount = pick });
+    }
+    private async Task BankChanged(ChangeEventArgs args)
+    {
+        var bankId = long.TryParse(args.Value?.ToString(), out var id) ? id : (long?)null;
+        _categoryBankId = bankId;
+        await NotifyChanged(Section with { BankId = bankId, CategoryId = null });
+        if (bankId.HasValue) await LoadCategoriesAsync();
+        else ClearCategories();
+    }
+    private async Task CategoryChanged(ChangeEventArgs args)
+    {
+        var categoryId = long.TryParse(args.Value?.ToString(), out var id) ? id : (long?)null;
+        await NotifyChanged(Section with { CategoryId = categoryId });
+    }
+    private async Task TypeChanged(ChangeEventArgs args) => await NotifyChanged(Section with { QuestionType = NullableValue(args.Value) });
+    private async Task DifficultyChanged(ChangeEventArgs args) => await NotifyChanged(Section with { Difficulty = NullableValue(args.Value) });
+    private static string? NullableValue(object? value) => string.IsNullOrWhiteSpace(value?.ToString()) ? null : value.ToString();
+
+    private async Task CandidateBankChangedAsync()
+    {
+        _candidateCategoryId = null;
+        _candidatePage = 1;
+        _categoryBankId = _candidateBankId;
+        if (_candidateBankId.HasValue) await LoadCategoriesAsync();
+        else ClearCategories();
+        await LoadCandidatesAsync();
+    }
+
+    private void ClearCategories()
+    {
+        ++_categoryLoadVersion;
+        _categories = [];
+        _categoriesLoading = false;
+        _categoryError = null;
+    }
+
+    private async Task LoadCategoriesAsync()
+    {
+        var bankId = _categoryBankId;
+        var version = ++_categoryLoadVersion;
+        _categoryError = null;
+        if (!bankId.HasValue) { _categories = []; _categoriesLoading = false; return; }
+        _categoriesLoading = true;
+        try
+        {
+            var categories = await QuestionService.GetCategoriesAsync(bankId.Value);
+            if (version == _categoryLoadVersion) _categories = categories;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载组卷分类失败"); if (version == _categoryLoadVersion) { _categories = []; _categoryError = "分类加载失败，请局部重试。"; } }
+        finally { if (version == _categoryLoadVersion) _categoriesLoading = false; }
+    }
+
+    private async Task OnKeywordInput(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            _candidatePage = 1;
+            await LoadCandidatesAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task LoadCandidatesAsync()
+    {
+        if (!CanSelect) return;
+        var version = ++_candidateLoadVersion;
+        _candidateLoading = true;
+        _candidateError = null;
+        try
+        {
+            _candidates = await Service.GetCandidatesAsync(new PaperCandidateQuery(
+                _candidateBankId, _candidateCategoryId, null, null,
+                string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(), _candidatePage, CandidatePageSize));
+            if (version != _candidateLoadVersion) return;
+        }
+        catch (Exception ex) { if (version == _candidateLoadVersion) { Logger.LogError(ex, "加载组卷候选题失败"); _candidateError = "候选题加载失败，请稍后重试。"; } }
+        finally { if (version == _candidateLoadVersion) _candidateLoading = false; }
+    }
+
+    private Task CandidatePageChangedAsync(int page) { _candidatePage = page; return LoadCandidatesAsync(); }
+    private Task Select(PaperCandidateRow candidate) => QuestionSelected.InvokeAsync(new PaperCandidateSelection(Section.Id, candidate));
+    private Task RemoveQuestion(PaperQuestionRow question) => QuestionRemoved.InvokeAsync(question);
+    private static string TypeLabel(string type) => type switch { "SingleChoice" => "单选", "MultipleChoice" => "多选", "TrueFalse" => "判断", _ => type };
+
+    public ValueTask DisposeAsync()
+    {
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,8 @@
+.question-editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); align-items: start; gap: var(--space-5); }
+.question-editor-form { min-width: 0; }
+.editor-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); min-width: 0; }
+.question-editor-form .card-header { align-items: flex-start; }
+.question-editor-form .textarea { min-height: 96px; resize: vertical; }
+.question-editor-form input:disabled, .question-editor-form select:disabled, .question-editor-form textarea:disabled { color: var(--color-ink-2); background: var(--color-surface-2); cursor: not-allowed; }
+@media (max-width: 1000px) { .question-editor-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) { .question-editor-form .card-header { align-items: stretch; flex-direction: column; } }

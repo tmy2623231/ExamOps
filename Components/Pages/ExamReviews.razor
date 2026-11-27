@@ -1,0 +1,94 @@
+@page "/exams/reviews"
+@attribute [Authorize(Policy = Permissions.ExamAttemptRead)]
+@rendermode InteractiveServer
+@inject ExamReviewService Service
+@inject ILogger<ExamReviews> Logger
+
+<div class="exam-page">
+    <PageHeader Title="答卷复核" Description="集中处理客观题格式异常、自动判分异议与作废申请；复核不会改变答卷状态。">
+        <Actions><button type="button" class="btn btn-secondary" disabled="@_loading" @onclick="LoadAsync"><Icon Name="refresh" />刷新队列</button></Actions>
+    </PageHeader>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    <section class="card exam-toolbar" aria-label="复核筛选">
+        <div class="field"><label for="review-type">复核类型</label><select id="review-type" class="select" @bind="_reviewType" @bind:after="FiltersChangedAsync"><option value="">全部类型</option><option value="@ReviewTypes.FormatAnomaly">格式异常</option><option value="@ReviewTypes.Dispute">判分异议</option><option value="@ReviewTypes.VoidRequest">作废申请</option></select></div>
+        <div class="field"><label for="review-attempt">答卷 ID</label><input id="review-attempt" class="input" type="number" min="1" value="@_attemptId" @oninput="OnAttemptInput" placeholder="可选" /></div>
+        <p class="field-hint">仅显示包含客观题且存在异常或复核记录的已交卷答卷。</p>
+        <button type="button" class="btn btn-secondary" @onclick="ClearAsync"><Icon Name="refresh" />重置</button>
+    </section>
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载复核队列…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync">重新加载</button></section>
+    }
+    else if (_result is null || _result.Items.Count == 0)
+    {
+        <section class="card"><EmptyState Title="没有待处理的复核记录" Description="当前范围与筛选条件下没有答卷；有新异常或复核事件时会显示在这里。" IconName="paper" /></section>
+    }
+    else
+    {
+        <section class="exam-list" aria-label="复核答卷列表">
+            @foreach (var row in _result.Items)
+            {
+                <article class="card exam-card">
+                    <div class="exam-card__head">
+                        <div class="exam-card__title"><h2><a href="/exams/reviews/@row.AttemptId">@row.TaskTitle</a></h2><p>@row.UserName · @row.DepartmentName · 答卷 #@row.AttemptId</p></div>
+                        <span class="badge @ExamLabels.BadgeClass(row.Status)">@ExamLabels.AttemptStatus(row.Status)</span>
+                    </div>
+                    <dl class="exam-card__facts">
+                        <div><dt>作答次数</dt><dd>第 @row.AttemptNo 次</dd></div>
+                        <div><dt>当前分 / 满分</dt><dd>@(row.Score?.ToString("0.##") ?? "未判分") / @row.MaxScore.ToString("0.##")</dd></div>
+                        <div><dt>原始自动分</dt><dd>@(row.AutoScore?.ToString("0.##") ?? "—")</dd></div>
+                        <div><dt>格式异常</dt><dd>@row.InvalidAnswerCount 题</dd></div>
+                        <div><dt>最近复核</dt><dd>@(row.LatestReviewType is null ? "—" : ExamLabels.ReviewType(row.LatestReviewType))</dd></div>
+                        <div><dt>复核时间</dt><dd>@TimeFormat.Display(row.LatestReviewAt)</dd></div>
+                    </dl>
+                    <footer class="exam-card__footer"><span class="exam-card__meta">交卷：@TimeFormat.Display(row.SubmittedAt)</span><a class="btn btn-secondary" href="/exams/reviews/@row.AttemptId"><Icon Name="arrow-right" />查看与处理</a></footer>
+                </article>
+            }
+        </section>
+        <section class="card"><Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" /></section>
+    }
+</div>
+
+@code {
+    private PagedResult<ReviewQueueRow>? _result;
+    private string _reviewType = "";
+    private string _attemptId = "";
+    private int _pageIndex = 1;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private string? _loadError;
+    private string? _message;
+    private string _messageKind = "info";
+    private int _loadVersion;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            var query = new ExamReviewQuery { ReviewType = string.IsNullOrWhiteSpace(_reviewType) ? null : _reviewType,
+                AttemptId = long.TryParse(_attemptId, out var id) && id > 0 ? id : null, PageIndex = _pageIndex, PageSize = PageSize };
+            var result = await Service.GetQueueAsync(query);
+            if (version != _loadVersion) return;
+            _result = result;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载复核队列失败"); _loadError = "复核队列加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private void OnAttemptInput(ChangeEventArgs args)
+    {
+        _attemptId = args.Value?.ToString() ?? "";
+        _pageIndex = 1;
+    }
+    private Task FiltersChangedAsync() { _pageIndex = 1; return LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+    private async Task ClearAsync() { _reviewType = ""; _attemptId = ""; _pageIndex = 1; _message = null; await LoadAsync(); }
+}

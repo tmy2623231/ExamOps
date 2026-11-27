@@ -1,0 +1,156 @@
+﻿@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components
+@inject ICurrentUser CurrentUser
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<a class="skip-link" href="#main-content">跳到主要内容</a>
+<div class="app-shell">
+    <aside id="main-navigation" @ref="_sidebar" class="sidebar @(_navOpen ? "is-open" : null)" aria-label="主导航" tabindex="-1" @onkeydown="HandleNavKeyDown">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true">E</span>
+            <span class="brand-copy"><strong>ExamOps</strong><small>考试运营平台</small></span>
+        </div>
+        <nav class="nav-list">
+            <span class="nav-section-label">工作台</span>
+            <NavLink href="/" Match="NavLinkMatch.All" class="nav-link" @onclick="CloseNav"><Icon Name="grid" /><span>运营看板</span></NavLink>
+            <AuthorizeView Policy="@Permissions.ExamTaskCreate">
+                <NavLink href="/exams/quick-publish" class="nav-link nav-link--featured" @onclick="CloseNav"><Icon Name="plus" /><span>极速发考向导</span></NavLink>
+            </AuthorizeView>
+            @if (_showOrgSection)
+            {
+                <span class="nav-section-label">组织与权限</span>
+            }
+            <AuthorizeView Policy="@Permissions.DepartmentRead"><NavLink href="/org/departments" class="nav-link" @onclick="CloseNav"><Icon Name="building" /><span>部门与模板</span></NavLink></AuthorizeView>
+            <AuthorizeView Policy="@Permissions.UserRead"><NavLink href="/org/users" class="nav-link" @onclick="CloseNav"><Icon Name="users" /><span>用户管理</span></NavLink></AuthorizeView>
+            <AuthorizeView Policy="@Permissions.RoleAssign"><NavLink href="/org/roles" class="nav-link" @onclick="CloseNav"><Icon Name="shield" /><span>角色权限</span></NavLink></AuthorizeView>
+            @if (_showContentSection)
+            {
+                <span class="nav-section-label">题库与考试</span>
+            }
+            <AuthorizeView Policy="@Permissions.QuestionRead">
+                <NavLink href="/content/banks" class="nav-link" @onclick="CloseNav"><Icon Name="grid" /><span>题库管理</span></NavLink>
+                <NavLink href="/content/questions" class="nav-link" @onclick="CloseNav"><Icon Name="edit" /><span>题目管理</span></NavLink>
+            </AuthorizeView>
+            <AuthorizeView Policy="@Permissions.PaperRead"><NavLink href="/content/papers" class="nav-link" @onclick="CloseNav"><Icon Name="paper" /><span>组卷</span></NavLink></AuthorizeView>
+            <AuthorizeView Policy="@Permissions.QuestionImport"><NavLink href="/content/questions/import" class="nav-link" @onclick="CloseNav"><Icon Name="arrow-right" /><span>批量导入</span></NavLink></AuthorizeView>
+            <AuthorizeView><NavLink href="/exams/my" class="nav-link" @onclick="CloseNav"><Icon Name="paper" /><span>我的考试</span></NavLink></AuthorizeView>
+            @if (!_isCandidateOnly)
+            {
+                <AuthorizeView Policy="@Permissions.ExamTaskRead"><NavLink href="/exams/tasks" class="nav-link" @onclick="CloseNav"><Icon Name="grid" /><span>考试任务</span></NavLink></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ExamAssignmentRead"><NavLink href="/exams/assignments" class="nav-link" @onclick="CloseNav"><Icon Name="users" /><span>分配管理</span></NavLink></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ExamAttemptRead"><NavLink href="/exams/reviews" class="nav-link" @onclick="CloseNav"><Icon Name="edit" /><span>答卷复核</span></NavLink></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ExamResultPublish"><NavLink href="/exams/publication" class="nav-link" @onclick="CloseNav"><Icon Name="check" /><span>成绩公布</span></NavLink></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ReportRead"><NavLink href="/exams/reports" class="nav-link" @onclick="CloseNav"><Icon Name="grid" /><span>考试报表</span></NavLink></AuthorizeView>
+            }
+            <span class="nav-section-label">个人</span>
+            <NavLink href="/account/password" class="nav-link" @onclick="CloseNav"><Icon Name="key" /><span>修改密码</span></NavLink>
+        </nav>
+        <div class="sidebar-footer"><span class="status-dot" aria-hidden="true"></span>SQL-first · v1.1.0</div>
+    </aside>
+    @if (_navOpen) { <button class="nav-scrim" aria-label="关闭导航" @onclick="CloseNavAsync"></button> }
+    <div class="main-column">
+        <header class="topbar">
+            <button @ref="_menuButton" class="icon-button menu-button" aria-label="@(_navOpen ? "关闭导航" : "打开导航")" aria-controls="main-navigation" aria-expanded="@_navOpen" @onclick="ToggleNav"><Icon Name="menu" /></button>
+            <div class="topbar-context"><span class="context-dot" aria-hidden="true"></span>@_context</div>
+            <div class="topbar-actions">
+                <CommandPalette />
+                <ThemeSkySwitch />
+                <span class="user-name">@CurrentUser.DisplayName</span>
+                <form method="post" action="/logout" class="logout-form">
+                    <AntiforgeryToken />
+                    <button type="submit" class="btn btn-ghost btn-sm"><Icon Name="logout" /><span>退出</span></button>
+                </form>
+            </div>
+        </header>
+        <main id="main-content" class="content" tabindex="-1">@Body</main>
+    </div>
+</div>
+<ToastHost />
+<SessionGuard />
+<div id="blazor-error-ui">
+    页面发生异常。<a href="" class="reload">重新加载</a><button class="btn btn-ghost btn-sm dismiss" aria-label="关闭错误提示">关闭</button>
+</div>
+
+@code {
+    private ElementReference _sidebar;
+    private ElementReference _menuButton;
+    private bool _navOpen;
+    private bool _showOrgSection;
+    private bool _showContentSection;
+    private bool _isCandidateOnly;
+    private string _context = "运营看板";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Navigation.LocationChanged += HandleLocationChanged;
+        UpdateContext();
+        await CurrentUser.LoadAsync();
+        if (CurrentUser.IsAuthenticated)
+        {
+            _isCandidateOnly = CurrentUser.Roles.Count > 0 && CurrentUser.Roles.All(r => r.Code == RoleCodes.Candidate);
+            _showOrgSection = !_isCandidateOnly && (CurrentUser.HasPermission(Permissions.DepartmentRead)
+                || CurrentUser.HasPermission(Permissions.UserRead)
+                || CurrentUser.HasPermission(Permissions.RoleAssign));
+            _showContentSection = !_isCandidateOnly && (CurrentUser.HasPermission(Permissions.QuestionRead)
+                || CurrentUser.HasPermission(Permissions.PaperRead)
+                || CurrentUser.HasPermission(Permissions.QuestionImport));
+        }
+    }
+
+    private void UpdateContext()
+    {
+        var path = new Uri(Navigation.Uri).AbsolutePath;
+        _context = path switch
+        {
+            "/" => "运营看板",
+            "/exams/quick-publish" => "极速发考向导",
+            "/org/departments" or "/org/users" or "/org/roles" => "组织管理",
+            "/content/banks" or "/content/questions" or "/content/questions/import" => "题库与内容",
+            "/content/papers" => "组卷",
+            "/content/papers/new" => "新建试卷",
+            _ when path.StartsWith("/content/papers/", StringComparison.Ordinal) => "编辑试卷",
+            "/account/password" => "账号安全",
+            "/exams/my" => "我的考试",
+            "/exams/tasks" => "考试任务管理",
+            _ when path.StartsWith("/exams/tasks/", StringComparison.Ordinal) => "考试任务",
+            "/exams/assignments" => "考试分配管理",
+            "/exams/reviews" => "答卷复核",
+            _ when path.StartsWith("/exams/reviews/", StringComparison.Ordinal) => "答卷复核详情",
+            "/exams/publication" => "成绩公布",
+            "/exams/reports" => "考试报表",
+            _ when path.StartsWith("/exams/batches/", StringComparison.Ordinal) => "下发批次",
+            _ when path.StartsWith("/exams/attempts/", StringComparison.Ordinal) => "在线考试",
+            _ when path.StartsWith("/exams/results/", StringComparison.Ordinal) => "考试结果",
+            _ => "考试运营"
+        };
+    }
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        UpdateContext();
+        StateHasChanged();
+    }
+
+    private async Task ToggleNav()
+    {
+        _navOpen = !_navOpen;
+        await InvokeAsync(StateHasChanged);
+        if (_navOpen) await _sidebar.FocusAsync();
+    }
+
+    private void CloseNav() => _navOpen = false;
+
+    private async Task CloseNavAsync()
+    {
+        CloseNav();
+        await _menuButton.FocusAsync();
+    }
+
+    private async Task HandleNavKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await CloseNavAsync();
+    }
+
+    public void Dispose() => Navigation.LocationChanged -= HandleLocationChanged;
+}

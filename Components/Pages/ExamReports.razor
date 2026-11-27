@@ -1,0 +1,199 @@
+@page "/exams/reports"
+@attribute [Authorize(Policy = Permissions.ReportRead)]
+@rendermode InteractiveServer
+@using System.Globalization
+@inject ReportService Service
+@inject ICurrentUser CurrentUser
+@inject ILogger<ExamReports> Logger
+
+<div class="exam-page">
+    <PageHeader Title="考试报表" Description="查看完成率、成绩分布、及格率、部门对比、题目正确率与异常记录。">
+        <Actions><AuthorizeView Policy="@Permissions.ReportExport"><label class="exam-export-format"><span class="exam-sr-only">导出格式</span><select class="select" @bind="_format" @bind:after="ResetExportMetadata"><option value="XLSX">XLSX</option><option value="CSV">CSV</option></select></label><button type="button" class="btn btn-primary" disabled="@(_taskId is null || _loading || _busy)" @onclick="ExportAsync"><Icon Name="arrow-right" />导出当前报表</button></AuthorizeView></Actions>
+    </PageHeader>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    @if (_export is not null)
+    {
+        <section class="card card-body exam-export-result"><div><strong>导出文件已生成</strong><p>@_export.FileName · @_export.RowCount 行 · 有效期至 @TimeFormat.Display(_export.ExpiresAt)</p><small>仅创建者本人可下载；下载时会再次校验权限、数据范围和有效期。</small></div><a class="btn btn-secondary" href="@_export.DownloadUrl" download="@_export.FileName"><Icon Name="arrow-right" />下载文件</a></section>
+    }
+    <section class="card exam-toolbar" aria-label="报表筛选">
+        <div class="field"><label for="report-type">报表类型</label><select id="report-type" class="select" @bind="_type" @bind:after="ReportChangedAsync"><option value="@ReportTypes.Summary">考试汇总</option><option value="@ReportTypes.Distribution">成绩分布</option><option value="@ReportTypes.PassRate">及格率</option><option value="@ReportTypes.DepartmentCompare">部门对比</option><option value="@ReportTypes.Questions">题目正确率</option><option value="@ReportTypes.Anomalies">异常记录</option><option value="@ReportTypes.Results">成绩明细</option></select></div>
+        <div class="field"><label for="report-task">考试任务</label><select id="report-task" class="select" value="@_taskId" @onchange="TaskChangedAsync"><option value="">@(_type == ReportTypes.DepartmentCompare ? "全部可见任务" : "请选择任务")</option>@foreach (var task in _tasks) { <option value="@task.Id">@task.Title</option> }</select></div>
+        @if (_type == ReportTypes.Questions)
+        {
+            <div class="field"><label for="report-question">题目版本 ID</label><input id="report-question" class="input" type="number" min="1" @bind="_questionVersionId" @bind:after="ResetExportMetadata" placeholder="留空查看任务全部题目" /></div>
+        }
+        else
+        {
+            <p class="field-hint">@ReportHint()</p>
+        }
+        <button type="button" class="btn btn-secondary" disabled="@_loading" @onclick="LoadAsync"><Icon Name="refresh" />查询</button>
+    </section>
+
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在生成报表…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync">重新查询</button></section>
+    }
+    else if (_type == ReportTypes.Anomalies && _taskId is not null)
+    {
+        <section class="card">
+            <header class="exam-section-head"><div><h2>异常记录</h2><p>包含格式异常、复核事件、调分与作废事件。</p></div></header>
+            @if (_anomalies is null || _anomalies.Items.Count == 0)
+            {
+                <EmptyState Title="暂无异常记录" Description="当前任务没有可见的异常事件。" IconName="paper" />
+            }
+            else
+            {
+                <div class="table-wrap"><table class="table"><thead><tr><th scope="col">时间</th><th scope="col">考生 / 答卷</th><th scope="col">类型</th><th scope="col">原因</th><th scope="col">操作者</th></tr></thead><tbody>
+                    @foreach (var row in _anomalies.Items)
+                    {
+                        <tr><td>@TimeFormat.Display(row.OccurredAt)</td><td>@row.UserName<br /><small>答卷 #@row.AttemptId · 第 @row.AttemptNo 次</small></td><td>@ExamLabels.ReviewType(row.EventType)</td><td>@row.Reason</td><td>@(row.ActorName ?? "系统")</td></tr>
+                    }
+                </tbody></table></div>
+                <Pagination TotalCount="_anomalies.TotalCount" PageIndex="_anomalies.PageIndex" PageSize="_anomalies.PageSize" PageChanged="AnomalyPageChangedAsync" />
+            }
+        </section>
+    }
+    else if (_table is not null)
+    {
+        <section class="card">
+            <header class="exam-section-head"><div><h2>@_table.Title</h2><p>生成时间：@TimeFormat.Display(_table.GeneratedAt) · 共 @_table.Rows.Count 行</p></div></header>
+            @if (!string.IsNullOrWhiteSpace(_table.Note)) { <p class="exam-inline-note">@_table.Note</p> }
+            @if (_table.Rows.Count == 0)
+            {
+                <EmptyState Title="暂无报表数据" Description="当前范围、任务或公布状态下没有可统计的数据。" IconName="paper" />
+            }
+            else
+            {
+                @if (_table.Rows.Count > PreviewRows) { <Alert Kind="info" Message="@($"页面预览前 {PreviewRows} 行；导出包含全部 {_table.Rows.Count} 行（上限 100000 行）。")" /> }
+                <div class="table-wrap"><table class="table"><thead><tr>@foreach (var column in _table.Columns) { <th scope="col">@column.Label</th> }</tr></thead><tbody>
+                    @foreach (var row in _table.Rows.Take(PreviewRows))
+                    {
+                        <tr>@foreach (var column in _table.Columns) { <td>@FormatValue(row.Values.GetValueOrDefault(column.Key), column.Kind)</td> }</tr>
+                    }
+                </tbody></table></div>
+            }
+        </section>
+    }
+    else
+    {
+        <section class="card"><EmptyState Title="选择报表范围" Description="除部门对比外，其他报表需要选择一个考试任务。" IconName="paper" /></section>
+    }
+    <p class="field-hint exam-spaced">成绩分布、及格率和成绩明细读取当前已发布快照；成绩撤回后立即隐藏。导出文件默认 24 小时过期。</p>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "taskId")] public long? RequestedTaskId { get; set; }
+    [SupplyParameterFromQuery(Name = "type")] public string? TypeRequested { get; set; }
+    private const int PreviewRows = 200;
+    private IReadOnlyList<ReportTaskOption> _tasks = [];
+    private string _type = ReportTypes.Summary;
+    private long? _taskId;
+    private long? _questionVersionId;
+    private ReportTable? _table;
+    private PagedResult<AnomalyRow>? _anomalies;
+    private ExportReportOutput? _export;
+    private bool _loading = true;
+    private bool _busy;
+    private int _anomalyPage = 1;
+    private const int AnomalyPageSize = 50;
+    private string? _loadError;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _exportMetadata;
+    private int _loadVersion;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _taskId = RequestedTaskId;
+        if (TypeRequested is ReportTypes.Summary or ReportTypes.Distribution or ReportTypes.PassRate
+            or ReportTypes.DepartmentCompare or ReportTypes.Questions or ReportTypes.Anomalies or ReportTypes.Results)
+            _type = TypeRequested;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null; _table = null; _anomalies = null; _export = null;
+        try
+        {
+            _tasks = await Service.GetTasksAsync();
+            if (version != _loadVersion) return;
+            if (_taskId is null && _type != ReportTypes.DepartmentCompare) _taskId = _tasks.FirstOrDefault()?.Id;
+            if (_type == ReportTypes.Anomalies)
+            {
+                if (_taskId is not { } taskId) return;
+                var result = await Service.GetAnomaliesAsync(taskId, new ReportQuery(_anomalyPage, AnomalyPageSize));
+                if (!result.IsSuccess) { _loadError = result.Error; return; }
+                _anomalies = result.Value;
+                return;
+            }
+            Result<ReportTable> tableResult = _type switch
+            {
+                ReportTypes.Distribution => _taskId is { } id ? await Service.GetDistributionAsync(id) : Result<ReportTable>.Fail("请选择考试任务", "VALIDATION_ERROR"),
+                ReportTypes.PassRate => _taskId is { } id ? await Service.GetPassRateAsync(id) : Result<ReportTable>.Fail("请选择考试任务", "VALIDATION_ERROR"),
+                ReportTypes.DepartmentCompare => await Service.GetDepartmentCompareAsync(new DepartmentCompareQuery(_taskId, null, null)),
+                ReportTypes.Questions => _taskId is { } id
+                    ? _questionVersionId is { } questionId ? await Service.GetQuestionAccuracyAsync(questionId, id) : await Service.GetTaskQuestionsAsync(id)
+                    : Result<ReportTable>.Fail("请选择考试任务", "VALIDATION_ERROR"),
+                ReportTypes.Results => _taskId is { } id ? await Service.GetResultsAsync(id) : Result<ReportTable>.Fail("请选择考试任务", "VALIDATION_ERROR"),
+                _ => _taskId is { } id ? await Service.GetSummaryAsync(id) : Result<ReportTable>.Fail("请选择考试任务", "VALIDATION_ERROR")
+            };
+            if (version != _loadVersion) return;
+            if (!tableResult.IsSuccess) { _loadError = tableResult.Error; return; }
+            _table = tableResult.Value;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载考试报表失败"); _loadError = "报表加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task TaskChangedAsync(ChangeEventArgs args)
+    {
+        _taskId = long.TryParse(args.Value?.ToString(), out var id) ? id : null;
+        _anomalyPage = 1; ResetExportMetadata();
+        await LoadAsync();
+    }
+    private Task ReportChangedAsync() { _anomalyPage = 1; ResetExportMetadata(); return LoadAsync(); }
+    private Task AnomalyPageChangedAsync(int page) { _anomalyPage = page; return LoadAsync(); }
+    private void ResetExportMetadata() => _exportMetadata = null;
+    private string ReportHint() => _type switch
+    {
+        ReportTypes.Summary => "完成率以非撤回安排为分母；无成绩安排不计入分数统计。",
+        ReportTypes.Distribution or ReportTypes.PassRate or ReportTypes.Results => "读取当前发布快照，每个安排只计一个最终分。",
+        ReportTypes.DepartmentCompare => "可选择全部可见任务，或限定一个任务进行部门对比。",
+        ReportTypes.Anomalies => "分页查看异常；导出包含当前任务全部异常（上限 100000 行）。",
+        _ => ""
+    };
+
+    private async Task ExportAsync()
+    {
+        if (_busy || _taskId is not { } taskId || !CurrentUser.HasPermission(Permissions.ReportExport)) return;
+        _busy = true; _message = null;
+        try
+        {
+            _exportMetadata ??= ExamAudit.Create("report-export", taskId);
+            var result = await Service.ExportAsync(taskId, new ExportReportInput(_type, _format), _exportMetadata);
+            if (!result.IsSuccess) { _message = result.Error; _messageKind = "danger"; return; }
+            _export = result.Value; _message = "报表导出完成，可在上方下载。"; _messageKind = "success";
+            _exportMetadata = null;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "导出考试报表失败"); _message = "报表导出失败，请稍后重试。"; _messageKind = "danger"; }
+        finally { _busy = false; }
+    }
+
+    private string _format = "XLSX";
+
+    private static string FormatValue(object? value, ReportColumnKind kind)
+    {
+        if (value is null) return "—";
+        if (value is DateTime date) return TimeFormat.ToLocal(date).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        if (kind == ReportColumnKind.Percent && value is decimal percent) return (percent * 100m).ToString("0.00", CultureInfo.InvariantCulture) + "%";
+        if (value is decimal number) return number.ToString("0.##", CultureInfo.InvariantCulture);
+        if (value is bool flag) return flag ? "是" : "否";
+        return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "—";
+    }
+}

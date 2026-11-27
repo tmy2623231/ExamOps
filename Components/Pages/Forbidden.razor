@@ -1,0 +1,12 @@
+@page "/forbidden"
+@attribute [AllowAnonymous]
+@layout ExamOps.Components.Layout.AuthLayout
+
+<section class="card card-body simple-state">
+    <span class="state-code">403</span>
+    <h1>无权访问此页面</h1>
+    <p class="muted">当前账号没有所需权限。请联系组织管理员，或返回有权限的页面。</p>
+    <a class="btn btn-primary" href="/">返回概览</a>
+</section>
+
+@code { }

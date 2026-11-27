@@ -1,0 +1,38 @@
+<!-- Lucian UX/UI Prompt #021 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#021 -->
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div @ref="_root" class="ux u021-compact">
+    <button class="u021-sw" type="button" role="switch" aria-checked="false" aria-label="切换浅色或深色主题" title="切换浅色 / 深色主题">
+        <span class="u021-halo" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="u021-stars" aria-hidden="true">
+            <i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i>
+        </span>
+        <span class="u021-clouds" aria-hidden="true"><i></i><i></i></span>
+        <span class="u021-knob" aria-hidden="true"><span class="u021-moon"><i></i><i></i><i></i></span></span>
+    </button>
+</div>
+
+@code {
+    private ElementReference _root;
+    private IJSObjectReference? _module;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Shared/ThemeSkySwitch.razor.js");
+        await _module.InvokeVoidAsync("init", _root);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is null) return;
+        try
+        {
+            await _module.InvokeVoidAsync("dispose", _root);
+            await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+    }
+}

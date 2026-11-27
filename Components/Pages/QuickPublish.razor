@@ -1,0 +1,602 @@
+<!-- Lucian UX/UI Prompt #042 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#042 -->
+@page "/exams/quick-publish"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.ExamTaskCreate)]
+@using System.Globalization
+@inject QuickPublishService QuickPublishSvc
+@inject ExamTaskService TaskSvc
+@inject QuestionImportService ImportSvc
+@inject OrganizationService OrgSvc
+@inject DataScopeService Scope
+@inject ICurrentUser CurrentUser
+@inject IClock Clock
+@inject ExamOps.Infra.Ui.ToastService Toasts
+@inject ILogger<QuickPublish> Logger
+
+<PageHeader Title="极速发考向导" Description="4 步极简发布：选择或上传题库 → 勾选出题规则 → 设定时间与考生 → 预览确认一键发布。">
+    <Actions>
+        <a class="btn btn-secondary" href="/exams/tasks"><Icon Name="grid" />高级任务管理</a>
+    </Actions>
+</PageHeader>
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在准备发考向导…</div>
+}
+else if (_published is not null)
+{
+    <section class="card card-body qp-done stagger-in" aria-live="polite">
+        <span class="qp-done__badge" aria-hidden="true"><Icon Name="check" /></span>
+        <h2>考试已一键发布成功</h2>
+        <p class="field-hint">试卷版本与考试任务均已原子化发布，考生可在开放时间内立即参考。</p>
+        <dl class="qp-summary-grid">
+            <div><dt>考试名称</dt><dd>@_examTitle</dd></div>
+            <div><dt>任务编码</dt><dd><code>@_published.TaskCode</code></dd></div>
+            <div><dt>总题量 / 总分</dt><dd>@_published.TotalQuestionCount 题 · @_published.TotalScore.ToString("0.##") 分</dd></div>
+            <div><dt>下发状态</dt><dd>@(_published.BatchId.HasValue ? $"已自动下发（批次 #{_published.BatchId}）" : "未自动下发，可进入任务手动分配")</dd></div>
+        </dl>
+        <div class="qp-done__actions">
+            <button type="button" class="btn btn-primary" @onclick="() => _shareOpen = true">扫码分享 / 复制链接</button>
+            <a class="btn btn-secondary" href="/exams/tasks/@_published.TaskId">查看考试任务</a>
+            @if (_published.BatchId.HasValue)
+            {
+                <a class="btn btn-secondary" href="/exams/batches/@_published.BatchId">查看下发批次</a>
+            }
+            <a class="btn btn-secondary" href="/">返回运营看板</a>
+            <button type="button" class="btn btn-ghost" @onclick="ResetWizard">再发一场</button>
+        </div>
+    </section>
+    <ExamShareModal IsOpen="_shareOpen" TaskId="_published.TaskId" TaskTitle="@_examTitle" OnClose="() => _shareOpen = false" />
+}
+else
+{
+    <div class="ux u042-shell card">
+        <ol class="u042-steps" aria-label="极速发考步骤">
+            <li class="u042-line" style="--p:@((_step / 3.0).ToString("0.000", CultureInfo.InvariantCulture))" aria-hidden="true"><i></i></li>
+            @for (var i = 0; i < StepLabels.Length; i++)
+            {
+                var idx = i;
+                var stateClass = idx < _step ? "done" : idx == _step ? "cur" : "";
+                <li class="u042-st @stateClass">
+                    <button class="u042-dot" type="button" disabled="@(idx > _step)" aria-current="@(idx == _step ? "step" : null)" @onclick="() => JumpToStep(idx)">
+                        <span>@(idx + 1)</span>
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.4l3 3 6-6.4" /></svg>
+                    </button>
+                    <small>@StepLabels[idx]</small>
+                </li>
+            }
+        </ol>
+
+        @if (!string.IsNullOrWhiteSpace(_reuseNotice))
+        {
+            <Alert Kind="info" Message="@_reuseNotice" Dismissible="true" />
+        }
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <Alert Kind="danger" Message="@_error" />
+        }
+
+        <div class="qp-body">
+            @if (_step == 0)
+            {
+                <section class="qp-pane stagger-in" aria-label="选择或上传题库">
+                    <h3>第 1 步：选择所属部门与题库</h3>
+                    <p class="field-hint">可直接选用已有题库，或在下方直接上传 Excel 模板并一键发布新题目。</p>
+
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="qp-dept">考试归属部门</label>
+                            <select id="qp-dept" class="select" @bind="_departmentId">
+                                @foreach (var d in _departments)
+                                {
+                                    <option value="@d.Id">@d.Name（@d.Path）</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="qp-title">考试名称</label>
+                            <input id="qp-title" class="input" @bind="_examTitle" maxlength="200" placeholder="例如：2026 年安全生产季度考核" autocomplete="off" />
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label for="qp-bank">选择题目来源题库</label>
+                        <select id="qp-bank" class="select" value="@_bankId" @onchange="OnBankChanged">
+                            <option value="0">请选择一个题库…</option>
+                            @foreach (var b in _banks)
+                            {
+                                var pubTotal = b.SingleCount + b.MultipleCount + b.TrueFalseCount;
+                                <option value="@b.BankId">@b.BankName（已发布 @pubTotal 题：单选 @b.SingleCount / 多选 @b.MultipleCount / 判断 @b.TrueFalseCount）</option>
+                            }
+                        </select>
+                    </div>
+
+                    @if (SelectedBank is { } sb)
+                    {
+                        <div class="qp-bank-stats">
+                            <span class="badge badge-info">单选题 @sb.SingleCount</span>
+                            <span class="badge badge-info">多选题 @sb.MultipleCount</span>
+                            <span class="badge badge-info">判断题 @sb.TrueFalseCount</span>
+                            @if (sb.DraftCount > 0)
+                            {
+                                <span class="badge badge-warning">草稿题 @sb.DraftCount</span>
+                                <button type="button" class="btn btn-secondary btn-sm" disabled="@_busy" @onclick="PublishBankDraftsAsync">一键发布全部草稿题</button>
+                            }
+                        </div>
+
+                        <div class="qp-upload-box">
+                            <div>
+                                <strong>快速补充题库（可选）</strong>
+                                <p class="field-hint">上传官方 <code>.xlsx</code> 题目模板，系统将自动校验、导入并发布题目到“@sb.BankName”。</p>
+                            </div>
+                            <div class="qp-upload-actions">
+                                <a class="btn btn-ghost btn-sm" href="/api/question-imports/template" target="_blank">下载模板</a>
+                                <label class="btn btn-secondary btn-sm qp-file-label">
+                                    <span>@(_uploading ? "正在导入…" : "上传 .xlsx 并自动发布")</span>
+                                    <InputFile OnChange="OnQuickUploadAsync" accept=".xlsx" disabled="@(_uploading || _busy)" />
+                                </label>
+                            </div>
+                        </div>
+                    }
+                </section>
+            }
+            else if (_step == 1)
+            {
+                <section class="qp-pane stagger-in" aria-label="勾选出题规则">
+                    <h3>第 2 步：简单勾选出题规则</h3>
+                    <p class="field-hint">勾选需要的客观题题型与每题分值，系统自动汇总总分与推荐及格分。</p>
+
+                    <div class="qp-mode-wrap">
+                        <TemplateRadioCards AriaLabel="选择组卷方式" Options="_modeOptions" SelectedKey="@_selectionMode" SelectedKeyChanged="k => _selectionMode = k" />
+                    </div>
+
+                    @if (SelectedBank is { } sb)
+                    {
+                        <div class="qp-type-grid">
+                            <div class="qp-type-card @(_includeSingle ? "is-on" : null)">
+                                <label class="checkbox-row">
+                                    <input type="checkbox" @bind="_includeSingle" disabled="@(sb.SingleCount == 0)" />
+                                    <span class="checkbox-copy"><strong>单选题</strong><small>题库可用 @sb.SingleCount 题</small></span>
+                                </label>
+                                <div class="qp-type-inputs">
+                                    <label>题量 <input type="number" class="input" min="0" max="@sb.SingleCount" @bind="_singleCount" disabled="@(!_includeSingle)" /></label>
+                                    <label>每题分值 <input type="number" class="input" min="0.5" max="100" step="0.5" @bind="_singleScore" disabled="@(!_includeSingle)" /></label>
+                                </div>
+                            </div>
+                            <div class="qp-type-card @(_includeMultiple ? "is-on" : null)">
+                                <label class="checkbox-row">
+                                    <input type="checkbox" @bind="_includeMultiple" disabled="@(sb.MultipleCount == 0)" />
+                                    <span class="checkbox-copy"><strong>多选题</strong><small>题库可用 @sb.MultipleCount 题（全对得分）</small></span>
+                                </label>
+                                <div class="qp-type-inputs">
+                                    <label>题量 <input type="number" class="input" min="0" max="@sb.MultipleCount" @bind="_multipleCount" disabled="@(!_includeMultiple)" /></label>
+                                    <label>每题分值 <input type="number" class="input" min="0.5" max="100" step="0.5" @bind="_multipleScore" disabled="@(!_includeMultiple)" /></label>
+                                </div>
+                            </div>
+                            <div class="qp-type-card @(_includeTrueFalse ? "is-on" : null)">
+                                <label class="checkbox-row">
+                                    <input type="checkbox" @bind="_includeTrueFalse" disabled="@(sb.TrueFalseCount == 0)" />
+                                    <span class="checkbox-copy"><strong>判断题</strong><small>题库可用 @sb.TrueFalseCount 题</small></span>
+                                </label>
+                                <div class="qp-type-inputs">
+                                    <label>题量 <input type="number" class="input" min="0" max="@sb.TrueFalseCount" @bind="_trueFalseCount" disabled="@(!_includeTrueFalse)" /></label>
+                                    <label>每题分值 <input type="number" class="input" min="0.5" max="100" step="0.5" @bind="_trueFalseScore" disabled="@(!_includeTrueFalse)" /></label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="qp-live-bar">
+                            <span>已选题量：<strong>@PlannedQuestionCount 题</strong></span>
+                            <span>试卷总分：<strong>@PlannedTotalScore.ToString("0.##") 分</strong></span>
+                            <span>建议及格分 (60%)：<strong>@SuggestedPassScore.ToString("0.##") 分</strong></span>
+                        </div>
+                    }
+                </section>
+            }
+            else if (_step == 2)
+            {
+                <section class="qp-pane stagger-in" aria-label="选时间与考生范围">
+                    <h3>第 3 步：设置考试时间与下发范围</h3>
+                    <p class="field-hint">支持一键快捷时间预设，或自定义精确开放窗口。</p>
+
+                    <div class="qp-presets" role="group" aria-label="快捷时间预设">
+                        <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyTimePreset("2h")'>立即开放 · 2 小时</button>
+                        <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyTimePreset("today")'>今天全天</button>
+                        <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyTimePreset("3d")'>未来 3 天</button>
+                        <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyTimePreset("7d")'>本周 7 天</button>
+                    </div>
+
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="qp-from">开放时间</label>
+                            <input id="qp-from" class="input" type="datetime-local" value="@_availableFromText" @onchange="e => _availableFromText = e.Value?.ToString() ?? string.Empty" />
+                        </div>
+                        <div class="field">
+                            <label for="qp-to">结束时间</label>
+                            <input id="qp-to" class="input" type="datetime-local" value="@_availableToText" @onchange="e => _availableToText = e.Value?.ToString() ?? string.Empty" />
+                        </div>
+                        <div class="field">
+                            <label for="qp-dur">考试时长（分钟）</label>
+                            <input id="qp-dur" class="input" type="number" min="1" max="600" @bind="_durationMinutes" />
+                        </div>
+                        <div class="field">
+                            <label for="qp-pass">及格分（留空则不设及格线）</label>
+                            <input id="qp-pass" class="input" type="number" min="0" max="@PlannedTotalScore" step="0.5" @bind="_passScore" />
+                        </div>
+                        <div class="field">
+                            <label for="qp-attempts">允许参考次数</label>
+                            <input id="qp-attempts" class="input" type="number" min="1" max="10" @bind="_attemptLimit" />
+                        </div>
+                        <div class="field">
+                            <label for="qp-release">成绩公布策略</label>
+                            <select id="qp-release" class="select" @bind="_resultReleasePolicy">
+                                <option value="Immediate">交卷后立即公布</option>
+                                <option value="AfterClose">考试关闭后自动公布</option>
+                                <option value="Manual">管理员手动公布</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="qp-assign-box">
+                        <label class="checkbox-row">
+                            <input type="checkbox" @bind="_assignWholeDepartment" />
+                            <span class="checkbox-copy">
+                                <strong>发布同时自动下发给所属部门全体成员</strong>
+                                <small>勾选后，系统将在发布任务后立即创建下发批次，考生登录即可开考。</small>
+                            </span>
+                        </label>
+                        @if (_assignWholeDepartment)
+                        {
+                            <label class="checkbox-row">
+                                <input type="checkbox" @bind="_includeDescendants" />
+                                <span class="checkbox-copy"><strong>包含全部下级子部门成员</strong><small>按部门树路径自动覆盖下属所有启用用户。</small></span>
+                            </label>
+                        }
+                    </div>
+                </section>
+            }
+            else
+            {
+                <section class="qp-pane stagger-in" aria-label="预览发布信息">
+                    <h3>第 4 步：核对发布信息，确认后一键发布</h3>
+                    <p class="field-hint">确认以下配置无误后点击“确认并一键发布”，系统将在单一事务内完成建卷、发卷、建任务、发布与下发。</p>
+
+                    <dl class="qp-summary-grid">
+                        <div><dt>考试名称</dt><dd>@_examTitle</dd></div>
+                        <div><dt>所属部门</dt><dd>@SelectedDepartmentName</dd></div>
+                        <div><dt>题目来源</dt><dd>@(SelectedBank?.BankName ?? "—")（@(_selectionMode == "RandomByType" ? "按题型随机抽题" : "固定题出卷")）</dd></div>
+                        <div><dt>题型与分值</dt><dd>@BuildBreakdownText()</dd></div>
+                        <div><dt>总题量 / 总分</dt><dd><strong>@PlannedQuestionCount 题 · @PlannedTotalScore.ToString("0.##") 分</strong>（及格分：@(_passScore.HasValue ? _passScore.Value.ToString("0.##") : "不限")）</dd></div>
+                        <div><dt>开放时间窗</dt><dd>@_availableFromText.Replace("T", " ") 至 @_availableToText.Replace("T", " ")</dd></div>
+                        <div><dt>时长与次数</dt><dd>@_durationMinutes 分钟 · 允许 @_attemptLimit 次</dd></div>
+                        <div><dt>成绩公布 / 下发</dt><dd>@ExamLabels.ResultPolicy(_resultReleasePolicy) · @(_assignWholeDepartment ? (_includeDescendants ? "立即下发部门及子部门" : "立即下发本部门") : "暂不自动下发")</dd></div>
+                    </dl>
+                </section>
+            }
+        </div>
+
+        <footer class="qp-footer">
+            <button type="button" class="btn btn-secondary" disabled="@(_step == 0 || _busy)" @onclick="PrevStep">上一步</button>
+            @if (_step < 3)
+            {
+                <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="NextStep">下一步<Icon Name="arrow-right" /></button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-primary qp-publish-btn" disabled="@_busy" @onclick="ConfirmPublishAsync">
+                    <Icon Name="check" />@(_busy ? "正在原子化发布…" : "确认并一键发布")
+                </button>
+            }
+        </footer>
+    </div>
+}
+
+@code {
+    private static readonly string[] StepLabels = ["选/传题库", "勾选出题", "时间与对象", "预览发布"];
+    private static readonly string[] DateFormats = ["yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHH:mm:ss"];
+
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private IReadOnlyList<QuickBankSummary> _banks = [];
+    private readonly IReadOnlyList<TemplateRadioCards.RadioCardOption> _modeOptions =
+    [
+        new("AllFixed", "固定题组卷", "从题库按勾选数量选取已发布题目，所有考生题面一致", "严谨", "固定卷"),
+        new("RandomByType", "按题型随机抽题", "按题型生成候选题池，每位考生开考时独立随机抽题", "防抄袭", "随机池")
+    ];
+
+    [SupplyParameterFromQuery(Name = "fromTaskId")] public long? FromTaskId { get; set; }
+
+    private int _step;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _uploading;
+    private bool _shareOpen;
+    private string? _error;
+    private string? _reuseNotice;
+    private QuickPublishResult? _published;
+
+    private long _departmentId;
+    private long _bankId;
+    private string _examTitle = "";
+    private string _selectionMode = "AllFixed";
+
+    private bool _includeSingle = true;
+    private int _singleCount;
+    private decimal _singleScore = 10;
+    private bool _includeMultiple;
+    private int _multipleCount;
+    private decimal _multipleScore = 10;
+    private bool _includeTrueFalse = true;
+    private int _trueFalseCount;
+    private decimal _trueFalseScore = 10;
+
+    private string _availableFromText = "";
+    private string _availableToText = "";
+    private int _durationMinutes = 30;
+    private int _attemptLimit = 1;
+    private decimal? _passScore;
+    private string _resultReleasePolicy = "AfterClose";
+    private bool _assignWholeDepartment = true;
+    private bool _includeDescendants = true;
+
+    private QuickBankSummary? SelectedBank => _banks.FirstOrDefault(x => x.BankId == _bankId);
+    private string SelectedDepartmentName => _departments.FirstOrDefault(x => x.Id == _departmentId)?.Name ?? "—";
+    private int PlannedQuestionCount =>
+        (_includeSingle ? Math.Max(0, _singleCount) : 0) +
+        (_includeMultiple ? Math.Max(0, _multipleCount) : 0) +
+        (_includeTrueFalse ? Math.Max(0, _trueFalseCount) : 0);
+    private decimal PlannedTotalScore =>
+        (_includeSingle ? Math.Max(0, _singleCount) * Math.Max(0, _singleScore) : 0) +
+        (_includeMultiple ? Math.Max(0, _multipleCount) * Math.Max(0, _multipleScore) : 0) +
+        (_includeTrueFalse ? Math.Max(0, _trueFalseCount) * Math.Max(0, _trueFalseScore) : 0);
+    private decimal SuggestedPassScore => Math.Round(PlannedTotalScore * 0.6m, 1);
+
+    protected override async Task OnInitializedAsync()
+    {
+        ApplyTimePreset("today");
+        await LoadOptionsAsync();
+    }
+
+    private async Task LoadOptionsAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            await CurrentUser.LoadAsync();
+            var allDepts = await OrgSvc.GetDepartmentsAsync();
+            var allowed = new List<DepartmentRow>();
+            foreach (var d in allDepts.Where(x => x.IsActive))
+                if (await Scope.CanAccessDepartmentAsync(d.Id, Permissions.ExamTaskCreate))
+                    allowed.Add(d);
+            _departments = allowed;
+            if (_departmentId == 0) _departmentId = _departments.FirstOrDefault()?.Id ?? 0;
+
+            _banks = await QuickPublishSvc.GetAvailableBanksAsync();
+            if (_bankId == 0 && _banks.Count > 0)
+            {
+                _bankId = _banks[0].BankId;
+                SyncBankDefaults();
+            }
+            if (FromTaskId.HasValue)
+            {
+                var src = await TaskSvc.GetDetailAsync(FromTaskId.Value);
+                if (src is not null)
+                {
+                    if (_departments.Any(d => d.Id == src.DepartmentId)) _departmentId = src.DepartmentId;
+                    _examTitle = $"{src.Title}（复考）";
+                    _durationMinutes = src.DurationMinutes;
+                    _attemptLimit = src.AttemptLimit;
+                    _passScore = src.PassScore;
+                    _resultReleasePolicy = src.ResultReleasePolicy;
+                    _reuseNotice = $"已从往期考试“{src.Title}”载入时长、及格分、次数与公布策略，请核对题库与新时间窗。";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载极速发考选项失败");
+            _error = "加载部门或题库失败，请刷新重试。";
+        }
+        finally { _loading = false; }
+    }
+
+    private void OnBankChanged(ChangeEventArgs e)
+    {
+        _bankId = long.TryParse(e.Value?.ToString(), out var id) ? id : 0;
+        SyncBankDefaults();
+    }
+
+    private void SyncBankDefaults()
+    {
+        if (SelectedBank is not { } sb) return;
+        _includeSingle = sb.SingleCount > 0;
+        _singleCount = Math.Min(10, sb.SingleCount);
+        _includeMultiple = sb.MultipleCount > 0;
+        _multipleCount = Math.Min(5, sb.MultipleCount);
+        _includeTrueFalse = sb.TrueFalseCount > 0;
+        _trueFalseCount = Math.Min(10, sb.TrueFalseCount);
+        if (string.IsNullOrWhiteSpace(_examTitle))
+            _examTitle = $"{sb.BankName} · 在线考试";
+        _passScore = SuggestedPassScore;
+    }
+
+    private async Task PublishBankDraftsAsync()
+    {
+        if (_busy || _bankId <= 0) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var r = await QuickPublishSvc.PublishDraftQuestionsInBankAsync(_bankId);
+            if (!r.IsSuccess) { _error = r.Error; return; }
+            _banks = await QuickPublishSvc.GetAvailableBanksAsync();
+            SyncBankDefaults();
+            await Toasts.SuccessAsync("草稿题已批量发布", $"成功发布 {r.Value} 道题目");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "批量发布草稿题失败");
+            _error = "批量发布草稿题失败，请重试。";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task OnQuickUploadAsync(InputFileChangeEventArgs e)
+    {
+        if (_uploading || _bankId <= 0) return;
+        var file = e.File;
+        if (file is null) return;
+        _uploading = true;
+        _error = null;
+        try
+        {
+            await using var stream = file.OpenReadStream(10 * 1024 * 1024);
+            var preview = await ImportSvc.PreviewAsync(_bankId, stream, file.Name, "SkipInvalid");
+            if (!preview.IsSuccess || preview.Value is null)
+            {
+                _error = preview.Error ?? "文件解析失败，请确认使用官方 .xlsx 模板。";
+                return;
+            }
+            if (preview.Value.ValidRows == 0)
+            {
+                _error = $"模板中未检测到可导入的有效题目（错误 {preview.Value.InvalidRows} 行）。";
+                return;
+            }
+            var confirm = await ImportSvc.ConfirmAsync(_bankId, new ImportConfirmInput(preview.Value.BatchId, "SkipInvalid", preview.Value.RowVersion, []));
+            if (!confirm.IsSuccess)
+            {
+                _error = confirm.Error ?? "确认导入失败。";
+                return;
+            }
+            var pubRes = await QuickPublishSvc.PublishDraftQuestionsInBankAsync(_bankId);
+            _banks = await QuickPublishSvc.GetAvailableBanksAsync();
+            SyncBankDefaults();
+            await Toasts.SuccessAsync("题库导入并发布完成", $"已新增并发布 {(pubRes.IsSuccess ? pubRes.Value : preview.Value.ValidRows)} 道题目");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "极速上传题库失败");
+            _error = "上传或导入题目失败，请检查文件格式与大小（≤10MB）。";
+        }
+        finally { _uploading = false; }
+    }
+
+    private void ApplyTimePreset(string key)
+    {
+        var now = TimeFormat.ToLocal(Clock.UtcNow);
+        var (from, to) = key switch
+        {
+            "2h" => (now, now.AddHours(2)),
+            "3d" => (now, now.AddDays(3)),
+            "7d" => (now, now.AddDays(7)),
+            _ => (new DateTime(now.Year, now.Month, now.Day, 0, 0, 0), new DateTime(now.Year, now.Month, now.Day, 23, 59, 0))
+        };
+        _availableFromText = from.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture);
+        _availableToText = to.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private void JumpToStep(int target)
+    {
+        if (target <= _step) { _error = null; _step = target; }
+    }
+
+    private void PrevStep()
+    {
+        if (_step > 0) { _error = null; _step--; }
+    }
+
+    private void NextStep()
+    {
+        _error = ValidateStep(_step);
+        if (_error is not null) return;
+        if (_step == 1 && !_passScore.HasValue) _passScore = SuggestedPassScore;
+        _step = Math.Min(3, _step + 1);
+    }
+
+    private string? ValidateStep(int step)
+    {
+        if (step == 0)
+        {
+            if (_departmentId <= 0) return "请选择考试归属部门。";
+            if (string.IsNullOrWhiteSpace(_examTitle)) return "请填写考试名称。";
+            if (SelectedBank is null) return "请选择一个题库。";
+            var total = SelectedBank.SingleCount + SelectedBank.MultipleCount + SelectedBank.TrueFalseCount;
+            if (total == 0) return "所选题库暂无已发布题目，请先上传模板或一键发布草稿题。";
+        }
+        else if (step == 1)
+        {
+            if (PlannedQuestionCount <= 0) return "请至少勾选一种题型并设置大于 0 的题量。";
+            if (PlannedTotalScore <= 0) return "试卷总分必须大于 0。";
+        }
+        else if (step == 2)
+        {
+            if (!TryParseLocal(_availableFromText, out var from) || !TryParseLocal(_availableToText, out var to))
+                return "请填写完整的开放时间与结束时间。";
+            if (to <= from) return "结束时间必须晚于开放时间。";
+            if (_durationMinutes is < 1 or > 600) return "考试时长需在 1–600 分钟之间。";
+            if (_passScore.HasValue && (_passScore.Value < 0 || _passScore.Value > PlannedTotalScore))
+                return $"及格分需在 0–{PlannedTotalScore:0.##} 之间。";
+        }
+        return null;
+    }
+
+    private async Task ConfirmPublishAsync()
+    {
+        if (_busy) return;
+        for (var s = 0; s <= 2; s++)
+        {
+            var err = ValidateStep(s);
+            if (err is not null) { _error = err; return; }
+        }
+        TryParseLocal(_availableFromText, out var from);
+        TryParseLocal(_availableToText, out var to);
+
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await QuickPublishSvc.ExecuteAsync(new QuickPublishRequest(
+                _departmentId, _bankId, _examTitle.Trim(), null, _selectionMode,
+                _includeSingle, _singleCount, _singleScore,
+                _includeMultiple, _multipleCount, _multipleScore,
+                _includeTrueFalse, _trueFalseCount, _trueFalseScore,
+                from, to, _durationMinutes, _attemptLimit, _passScore, _resultReleasePolicy,
+                _assignWholeDepartment, _includeDescendants));
+
+            if (!result.IsSuccess || result.Value is null)
+            {
+                _error = result.Error ?? "一键发布失败，请检查配置。";
+                return;
+            }
+            _published = result.Value;
+            await Toasts.SuccessAsync("考试已发布", $"{_examTitle}（{result.Value.TaskCode}）已上线");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "极速发考执行失败");
+            _error = "一键发布失败，已自动回滚，请稍后重试。";
+        }
+        finally { _busy = false; }
+    }
+
+    private void ResetWizard()
+    {
+        _published = null;
+        _step = 0;
+        _error = null;
+        _examTitle = "";
+        SyncBankDefaults();
+    }
+
+    private string BuildBreakdownText()
+    {
+        var parts = new List<string>();
+        if (_includeSingle && _singleCount > 0) parts.Add($"单选 {_singleCount} 题×{_singleScore:0.##}分");
+        if (_includeMultiple && _multipleCount > 0) parts.Add($"多选 {_multipleCount} 题×{_multipleScore:0.##}分");
+        if (_includeTrueFalse && _trueFalseCount > 0) parts.Add($"判断 {_trueFalseCount} 题×{_trueFalseScore:0.##}分");
+        return string.Join(" / ", parts);
+    }
+
+    private static bool TryParseLocal(string value, out DateTime dt)
+        => DateTime.TryParseExact(value, DateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out dt);
+}

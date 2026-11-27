@@ -1,0 +1,495 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject DashboardService Dashboard
+@inject AssignmentService Assignments
+@inject ICurrentUser CurrentUser
+@inject IClock Clock
+@inject IJSRuntime JS
+@inject ExamOps.Infra.Ui.ToastService Toasts
+@inject ILogger<Home> Logger
+
+@if (CurrentUser.MustChangePassword)
+{
+    <Alert Kind="warning" Message="当前账号需要修改初始密码。完成修改后，重新登录即可继续使用。" />
+}
+
+@if (_loading)
+{
+    <div class="dash-skeleton" role="status" aria-label="正在加载运营看板">
+        <div class="skeleton dash-skel-hero"></div>
+        <div class="dash-kpi-grid">
+            <div class="skeleton dash-skel-kpi"></div>
+            <div class="skeleton dash-skel-kpi"></div>
+            <div class="skeleton dash-skel-kpi"></div>
+            <div class="skeleton dash-skel-kpi"></div>
+        </div>
+        <div class="dash-main-grid">
+            <div class="skeleton dash-skel-panel"></div>
+            <div class="skeleton dash-skel-panel"></div>
+        </div>
+    </div>
+}
+else if (_error is not null || _data is null)
+{
+    <section class="card card-body dash-error">
+        <Alert Kind="danger" Message="@(_error ?? "运营看板加载失败，请稍后重试。")" />
+        <button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button>
+    </section>
+}
+else
+{
+    <section class="dash-hero card stagger-in" aria-label="欢迎与快捷入口">
+        <div class="dash-hero__copy">
+            <div class="dash-hero__meta">
+                <span class="badge badge-info">实时运营看板</span>
+                @foreach (var role in _data.RoleNames)
+                {
+                    <span class="badge badge-neutral">@role</span>
+                }
+            </div>
+            <h1>你好，@_data.DisplayName</h1>
+            <p>按当前账号权限实时汇总考试进度、题库规模与待办事项；按 <kbd class="dash-kbd">Ctrl+K</kbd> 可随时全局跳转。</p>
+        </div>
+        <div class="dash-hero__actions">
+            @if (_data.CanQuickPublish)
+            {
+                <a class="btn btn-primary" href="/exams/quick-publish"><Icon Name="plus" />极速发考向导</a>
+            }
+            @if (_data.CanManageDepartments)
+            {
+                <a class="btn btn-secondary" href="/org/departments"><Icon Name="building" />组织架构模板</a>
+            }
+            <button type="button" class="btn btn-ghost" disabled="@_refreshing" @onclick="RefreshAsync">
+                <Icon Name="refresh" />@(_refreshing ? "刷新中…" : "刷新数据")
+            </button>
+        </div>
+    </section>
+
+    @if (_data.ExamMetrics is { } exam)
+    {
+        <section class="dash-kpi-grid" aria-label="考试核心指标">
+            <a class="dash-kpi card card--interactive stagger-in" href="/exams/tasks">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">进行中考试</span><span class="badge badge-success">已发布</span></div>
+                <OdometerNumber Value="@exam.PublishedTaskCount.ToString()" Label="进行中考试" />
+                <small>草稿 @exam.DraftTaskCount 场 · 已公布成绩 @exam.ReleasedTaskCount 场</small>
+            </a>
+            <a class="dash-kpi card card--interactive stagger-in" href="/exams/assignments">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">已完成人次</span><span class="badge badge-info">作答进度</span></div>
+                <OdometerNumber Value="@exam.CompletedAssignmentCount.ToString()" Label="已完成人次" />
+                <small>总计下发 @exam.TotalAssignmentCount 人次 · 完成率 @(exam.TotalAssignmentCount > 0 ? Math.Round(exam.CompletedAssignmentCount * 100m / exam.TotalAssignmentCount, 1).ToString("0.#") : "0")%</small>
+            </a>
+            <a class="dash-kpi card card--interactive stagger-in" href="/exams/reviews">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">待复核答卷</span><span class="badge @(exam.PendingReviewCount > 0 ? "badge-warning" : "badge-neutral")">@(exam.PendingReviewCount > 0 ? "需关注" : "已清空")</span></div>
+                <OdometerNumber Value="@exam.PendingReviewCount.ToString()" Label="待复核答卷" />
+                <small>待公布关考任务 @exam.ClosedUnpublishedCount 场</small>
+            </a>
+            <a class="dash-kpi card card--interactive stagger-in" href="/exams/reports">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">已公布平均及格率</span><span class="badge badge-neutral">正式快照</span></div>
+                <OdometerNumber Value="@(exam.AveragePassRate.HasValue ? $"{exam.AveragePassRate.Value:0.#}%" : "--")" Label="平均及格率" />
+                <small>基于已公布成绩快照统计</small>
+            </a>
+        </section>
+    }
+    else if (_data.OrgSummary is { } org)
+    {
+        <section class="dash-kpi-grid" aria-label="组织概览">
+            <a class="dash-kpi card card--interactive stagger-in" href="/org/departments">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">部门节点</span><span class="badge badge-info">组织树</span></div>
+                <OdometerNumber Value="@org.DepartmentCount.ToString()" Label="部门" />
+                <small>支持从行业模板一键初始化</small>
+            </a>
+            <a class="dash-kpi card card--interactive stagger-in" href="/org/users">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">用户总数</span><span class="badge badge-success">活跃 @org.ActiveUserCount</span></div>
+                <OdometerNumber Value="@org.UserCount.ToString()" Label="用户" />
+                <small>按部门数据范围自动隔离</small>
+            </a>
+            <a class="dash-kpi card card--interactive stagger-in" href="/org/roles">
+                <div class="dash-kpi__top"><span class="dash-kpi__label">系统角色</span><span class="badge badge-neutral">RBAC</span></div>
+                <OdometerNumber Value="@org.RoleCount.ToString()" Label="角色" />
+                <small>权限码细粒度管控</small>
+            </a>
+        </section>
+    }
+
+    <div class="dash-main-grid">
+        <div class="dash-col-main">
+            @if (_data.MyExams.Count > 0 || _data.ExamMetrics is null)
+            {
+                <section class="card stagger-in" aria-label="我的考试">
+                    <header class="card-header">
+                        <div>
+                            <h2 class="card-title">我的考试</h2>
+                            <span class="field-hint">查看待参加、进行中与已出分的考试安排</span>
+                        </div>
+                        <a class="btn btn-secondary btn-sm" href="/exams/my">全部考试<Icon Name="arrow-right" /></a>
+                    </header>
+                    @if (_data.MyExams.Count == 0)
+                    {
+                        <EmptyState Title="暂无待参加考试" Description="管理员下发考试任务后，会第一时间出现在这里。" IconName="paper" />
+                    }
+                    else
+                    {
+                        <div class="dash-list">
+                            @foreach (var item in _data.MyExams)
+                            {
+                                var canStart = ExamLabels.CanStart(item, TimeFormat.ToLocal(Clock.UtcNow));
+                                <div class="dash-list-row">
+                                    <div class="dash-list-row__info">
+                                        <div class="dash-list-row__title">
+                                            <strong>@item.TaskTitle</strong>
+                                            <span class="badge @ExamLabels.BadgeClass(item.Status)">@ExamLabels.AssignmentStatus(item.Status)</span>
+                                        </div>
+                                        <small>@TimeFormat.Display(item.AvailableFrom) – @TimeFormat.Display(item.AvailableTo) · @item.DurationMinutes 分钟</small>
+                                    </div>
+                                    <div class="dash-list-row__act">
+                                        @if (item.CurrentAttemptStatus == "InProgress" && item.CurrentAttemptId is not null)
+                                        {
+                                            <a class="btn btn-primary btn-sm" href="/exams/attempts/@item.CurrentAttemptId">继续作答</a>
+                                        }
+                                        else if (canStart)
+                                        {
+                                            <a class="btn btn-primary btn-sm" href="/exams/my">前往开考</a>
+                                        }
+                                        else if (item.CurrentAttemptId is not null)
+                                        {
+                                            <a class="btn btn-secondary btn-sm" href="/exams/results/@item.CurrentAttemptId">查看结果</a>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </section>
+            }
+
+            @if (_data.ExamMetrics is not null)
+            {
+                <section class="card stagger-in" aria-label="近期考试快速掌控">
+                    <header class="card-header">
+                        <div>
+                            <h2 class="card-title">近期考试快速掌控</h2>
+                            <span class="field-hint">快速查看参与进度，并一键跳转修改、下发、公布或查看报表</span>
+                        </div>
+                        <div class="dash-header-actions">
+                            @if (_data.CanQuickPublish)
+                            {
+                                <a class="btn btn-primary btn-sm" href="/exams/quick-publish"><Icon Name="plus" />极速发考</a>
+                            }
+                            <a class="btn btn-secondary btn-sm" href="/exams/tasks">全部任务</a>
+                        </div>
+                    </header>
+                    @if (_data.RecentTasks.Count == 0)
+                    {
+                        <EmptyState Title="还没有考试任务" Description="点击“极速发考向导”，4 步完成上传题库、选时间与预览发布。" IconName="paper">
+                            <Action>
+                                @if (_data.CanQuickPublish)
+                                {
+                                    <a class="btn btn-primary" href="/exams/quick-publish"><Icon Name="plus" />立即极速发考</a>
+                                }
+                            </Action>
+                        </EmptyState>
+                    }
+                    else
+                    {
+                        <div class="table-wrap" tabindex="0">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">考试名称</th>
+                                        <th scope="col">状态</th>
+                                        <th scope="col">完成进度</th>
+                                        <th scope="col">成绩状态</th>
+                                        <th scope="col" class="text-right">快捷操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var task in _data.RecentTasks)
+                                    {
+                                        var pct = task.AssignmentCount > 0 ? Math.Min(100, (int)Math.Round(task.CompletedCount * 100.0 / task.AssignmentCount)) : 0;
+                                        <tr>
+                                            <td>
+                                                <div class="dash-task-cell">
+                                                    <a class="dash-task-link" href="/exams/tasks/@task.Id">@task.Title</a>
+                                                    <small>@task.DepartmentName · @task.Code</small>
+                                                </div>
+                                            </td>
+                                            <td><span class="badge @ExamLabels.BadgeClass(task.Status)">@ExamLabels.TaskStatus(task.Status)</span></td>
+                                            <td>
+                                                <button type="button" class="dash-progress dash-progress--btn" title="点击查看考中实时进度与未参考名单" @onclick="() => OpenProgressModalAsync(task)">
+                                                    <span>@task.CompletedCount / @task.AssignmentCount</span>
+                                                    <div class="dash-progress__track"><i style="width:@(pct)%"></i></div>
+                                                </button>
+                                            </td>
+                                            <td><span class="badge @(task.ResultStatus == "Published" ? "badge-success" : "badge-neutral")">@ExamLabels.ResultStatus(task.ResultStatus)</span></td>
+                                            <td>
+                                                <div class="table-actions">
+                                                    <button type="button" class="btn btn-ghost btn-sm" @onclick="() => OpenShare(task)">分享</button>
+                                                    @if (_data.CanQuickPublish)
+                                                    {
+                                                        <a class="btn btn-ghost btn-sm" href="/exams/quick-publish?fromTaskId=@task.Id">复发</a>
+                                                    }
+                                                    <a class="btn btn-ghost btn-sm" href="/exams/tasks/@task.Id">管理</a>
+                                                    @if (_data.CanPublishResults && task.Status == "Closed" && task.ResultStatus != "Published")
+                                                    {
+                                                        <a class="btn btn-primary btn-sm" href="/exams/publication?taskId=@task.Id">公布</a>
+                                                    }
+                                                    @if (_data.CanViewReports)
+                                                    {
+                                                        <a class="btn btn-ghost btn-sm" href="/exams/reports?taskId=@task.Id">报表</a>
+                                                    }
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </section>
+            }
+        </div>
+
+        <aside class="dash-col-side">
+            @if (_donutSlices.Count > 0)
+            {
+                <div class="stagger-in">
+                    <DonutChartCard Subtitle="@_donutSubtitle" Title="@_donutTitle" Unit="@_donutUnit" Slices="_donutSlices" />
+                </div>
+            }
+
+            <section class="card card-body stagger-in" aria-label="快捷入口与运维工具">
+                <h2 class="card-title">高频操作直达</h2>
+                <p class="field-hint dash-side-hint">减少层级跳转，常用设置一步直达。</p>
+                <div class="dash-quick-grid">
+                    @if (_data.CanQuickPublish)
+                    {
+                        <a class="dash-quick-item" href="/exams/quick-publish">
+                            <span class="dash-quick-ic"><Icon Name="plus" /></span>
+                            <span><strong>极速发考向导</strong><small>上传题库 → 勾选 → 预览发布</small></span>
+                        </a>
+                    }
+                    @if (_data.CanImportQuestions)
+                    {
+                        <a class="dash-quick-item" href="/content/questions/import">
+                            <span class="dash-quick-ic"><Icon Name="arrow-right" /></span>
+                            <span><strong>Excel 批量导入题库</strong><small>支持单选 / 多选 / 判断模板</small></span>
+                        </a>
+                    }
+                    @if (_data.CanManageDepartments)
+                    {
+                        <a class="dash-quick-item" href="/org/departments">
+                            <span class="dash-quick-ic"><Icon Name="building" /></span>
+                            <span><strong>组织架构模板</strong><small>一键套用行业部门树</small></span>
+                        </a>
+                    }
+                    @if (_data.CanReviewAttempts)
+                    {
+                        <a class="dash-quick-item" href="/exams/reviews">
+                            <span class="dash-quick-ic"><Icon Name="edit" /></span>
+                            <span><strong>答卷异常复核</strong><small>判分异议记录与调分留痕</small></span>
+                        </a>
+                    }
+                    @if (_data.CanViewReports)
+                    {
+                        <a class="dash-quick-item" href="/exams/reports">
+                            <span class="dash-quick-ic"><Icon Name="grid" /></span>
+                            <span><strong>考试报表与导出</strong><small>汇总、及格率与安全导出</small></span>
+                        </a>
+                    }
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    <ExamShareModal IsOpen="_shareOpen" TaskId="_shareTaskId" TaskTitle="@_shareTaskTitle" OnClose="() => _shareOpen = false" />
+
+    <Modal IsOpen="_progressOpen" Title="@($"考中进度与催考 · {_progressTask?.Title}")" Wide="true" OnClose="() => _progressOpen = false">
+        <ChildContent>
+            @if (_progressLoading)
+            {
+                <div class="loading-state"><span class="spinner" aria-hidden="true"></span>正在读取考生参考进度…</div>
+            }
+            else if (_progressRows.Count == 0)
+            {
+                <EmptyState Title="暂无已下发考生" Description="该考试任务尚未下发给任何考生。" IconName="users" />
+            }
+            else
+            {
+                var notStarted = _progressRows.Where(r => r.CurrentAttemptStatus is null or "").ToList();
+                var inProgress = _progressRows.Where(r => r.CurrentAttemptStatus == "InProgress").ToList();
+                var submitted = _progressRows.Where(r => r.CurrentAttemptStatus is "Submitted" or "AutoSubmitted" or "Graded").ToList();
+                <div class="dash-urge-bar">
+                    <span class="badge badge-warning">未开始 @notStarted.Count 人</span>
+                    <span class="badge badge-info">作答中 @inProgress.Count 人</span>
+                    <span class="badge badge-success">已交卷 @submitted.Count 人</span>
+                    @if (notStarted.Count > 0)
+                    {
+                        <button type="button" class="btn btn-primary btn-sm" @onclick="() => CopyUrgeListAsync(notStarted)">一键复制未考名单（催考）</button>
+                    }
+                </div>
+                <div class="table-wrap" tabindex="0">
+                    <table class="table">
+                        <thead><tr><th>考生</th><th>部门</th><th>安排状态</th><th>当前答卷</th></tr></thead>
+                        <tbody>
+                            @foreach (var row in _progressRows)
+                            {
+                                <tr>
+                                    <td><strong>@row.DisplayName</strong></td>
+                                    <td>@row.DepartmentName</td>
+                                    <td><span class="badge @ExamLabels.BadgeClass(row.Status)">@ExamLabels.AssignmentStatus(row.Status)</span></td>
+                                    <td>@ExamLabels.AttemptStatus(row.CurrentAttemptStatus)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </ChildContent>
+        <FooterContent>
+            @if (_progressTask is not null)
+            {
+                <a class="btn btn-secondary" href="/exams/assignments?taskId=@_progressTask.Id">打开完整分配管理</a>
+            }
+            <button type="button" class="btn btn-primary" @onclick="() => _progressOpen = false">关闭</button>
+        </FooterContent>
+    </Modal>
+}
+
+@code {
+    private DashboardOverviewDto? _data;
+    private List<DonutChartCard.DonutSlice> _donutSlices = [];
+    private string _donutSubtitle = "";
+    private string _donutTitle = "";
+    private string _donutUnit = "项";
+    private bool _loading = true;
+    private bool _refreshing;
+    private string? _error;
+
+    private bool _shareOpen;
+    private long _shareTaskId;
+    private string _shareTaskTitle = "";
+
+    private bool _progressOpen;
+    private bool _progressLoading;
+    private DashboardTaskItem? _progressTask;
+    private IReadOnlyList<ExamAssignmentRow> _progressRows = [];
+
+    private void OpenShare(DashboardTaskItem task)
+    {
+        _shareTaskId = task.Id;
+        _shareTaskTitle = task.Title;
+        _shareOpen = true;
+    }
+
+    private async Task OpenProgressModalAsync(DashboardTaskItem task)
+    {
+        _progressTask = task;
+        _progressOpen = true;
+        _progressLoading = true;
+        _progressRows = [];
+        try
+        {
+            var paged = await Assignments.GetPagedAsync(new AssignmentQuery(task.Id, null, null, 1, 100));
+            _progressRows = paged.Items.Where(x => x.Status != "Revoked").ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "读取考中进度失败");
+            await Toasts.ErrorAsync("读取考中进度失败", "请稍后重试");
+        }
+        finally { _progressLoading = false; }
+    }
+
+    private async Task CopyUrgeListAsync(IReadOnlyList<ExamAssignmentRow> notStarted)
+    {
+        var names = string.Join("、", notStarted.Select(x => $"{x.DisplayName}({x.DepartmentName})"));
+        var text = $"【催考提醒】考试《{_progressTask?.Title}》尚未开始参考名单（共 {notStarted.Count} 人）：{names}";
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            await Toasts.SuccessAsync("未参考名单已复制", $"共 {notStarted.Count} 人，可直接粘贴到工作群催考");
+        }
+        catch
+        {
+            await Toasts.InfoAsync("未参考名单", text);
+        }
+    }
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _data = await Dashboard.GetOverviewAsync();
+            BuildChart();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载运营看板失败");
+            _error = "运营看板数据加载失败，请稍后重试。";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            _data = await Dashboard.GetOverviewAsync();
+            BuildChart();
+            await Toasts.SuccessAsync("看板已刷新", "最新考试与题库统计已同步");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "刷新运营看板失败");
+            await Toasts.ErrorAsync("刷新失败", "请稍后重试");
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private void BuildChart()
+    {
+        _donutSlices = [];
+        if (_data is null) return;
+
+        if (_data.QuestionMetrics is { } q && (q.SingleChoiceCount + q.MultipleChoiceCount + q.TrueFalseCount) > 0)
+        {
+            _donutSubtitle = $"题库资产 · {q.BankCount} 个题库";
+            _donutTitle = "客观题题型分布";
+            _donutUnit = "道题";
+            _donutSlices =
+            [
+                new("单选题", q.SingleChoiceCount, "var(--color-primary)"),
+                new("多选题", q.MultipleChoiceCount, "var(--color-secondary)"),
+                new("判断题", q.TrueFalseCount, "var(--color-success)")
+            ];
+            return;
+        }
+
+        if (_data.ExamMetrics is { } e && (e.PublishedTaskCount + e.DraftTaskCount + e.ClosedUnpublishedCount + e.ReleasedTaskCount) > 0)
+        {
+            _donutSubtitle = "考试生命周期";
+            _donutTitle = "任务状态分布";
+            _donutUnit = "场考试";
+            _donutSlices =
+            [
+                new("进行中", e.PublishedTaskCount, "var(--color-success)"),
+                new("草稿", e.DraftTaskCount, "var(--color-warning)"),
+                new("待公布", e.ClosedUnpublishedCount, "var(--color-secondary)"),
+                new("已公布", e.ReleasedTaskCount, "var(--color-primary)")
+            ];
+        }
+    }
+}

@@ -1,0 +1,210 @@
+@page "/content/questions"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.QuestionRead)]
+@using Microsoft.AspNetCore.Components.Forms
+@inject QuestionService Service
+@inject ILogger<Questions> Logger
+@implements IAsyncDisposable
+
+<PageHeader Title="题目管理" Description="按题库、题型、状态、标签或关键词查找题目，草稿与已发布版本分开管理。">
+    <Actions>
+        <AuthorizeView Policy="@Permissions.QuestionCreate">
+            <a class="btn btn-primary" href="/content/questions/new"><Icon Name="plus" />新建题目</a>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" /> }
+@if (!string.IsNullOrWhiteSpace(_filterError)) { <Alert Kind="warning" Message="@_filterError" /> }
+
+<section class="card question-filters" aria-label="题目筛选">
+    <div class="filter-field filter-keyword">
+        <label for="question-keyword">搜索题干或编码</label>
+        <input id="question-keyword" class="input" type="search" placeholder="输入关键词" value="@_keyword" @oninput="OnKeywordInput" autocomplete="off" />
+    </div>
+    <div class="filter-field"><label for="question-bank">题库</label><select id="question-bank" class="select" @bind="_bankId" @bind:after="BankChangedAsync"><option value="">全部题库</option>@foreach (var bank in _banks) { <option value="@bank.Id">@bank.Name</option> }</select></div>
+    <div class="filter-field"><label for="question-category">分类</label><select id="question-category" class="select" @bind="_categoryId" @bind:after="FiltersChangedAsync" disabled="@(_bankId is null || _categoriesLoading)"><option value="">@(_bankId is null ? "请先选择题库" : _categoriesLoading ? "正在加载分类…" : "全部分类")</option>@foreach (var category in _categories.Where(x => x.IsActive)) { <option value="@category.Id">@category.Name</option> }</select>@if (_categoryError is not null) { <button type="button" class="btn btn-ghost btn-sm" @onclick="LoadCategoriesAsync">重试分类加载</button> }</div>
+    <div class="filter-field"><label for="question-type">题型</label><select id="question-type" class="select" @bind="_type" @bind:after="FiltersChangedAsync"><option value="">全部题型</option><option value="SingleChoice">单选题</option><option value="MultipleChoice">多选题</option><option value="TrueFalse">判断题</option></select></div>
+    <div class="filter-field"><label for="question-status">状态</label><select id="question-status" class="select" @bind="_status" @bind:after="FiltersChangedAsync"><option value="">全部状态</option><option value="Draft">草稿</option><option value="Published">已发布</option><option value="Archived">已归档</option></select></div>
+    <div class="filter-field"><label for="question-tag">标签</label><select id="question-tag" class="select" @bind="_tagId" @bind:after="FiltersChangedAsync"><option value="">全部标签</option>@foreach (var tag in _tags.Where(x => x.IsActive)) { <option value="@tag.Id">@tag.Name</option> }</select></div>
+    <div class="filter-actions"><button type="button" class="btn btn-secondary" @onclick="ClearAsync">重置筛选</button></div>
+</section>
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载题目…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync">重新加载</button></section>
+}
+else if (_result is null || _result.Items.Count == 0)
+{
+    <section class="card"><EmptyState Title="没有符合条件的题目" Description="调整筛选条件，或在可写题库中新建题目。" IconName="grid" /></section>
+}
+else
+{
+    <section class="card" aria-label="题目列表">
+        <div class="table-wrap" role="region" aria-label="题目表格，可横向滚动" tabindex="0">
+            <table class="table question-table">
+                <caption class="sr-only">题目编码、题型、状态、题干、难度、分值、标签与操作</caption>
+                <thead><tr><th scope="col">编码 / 题库</th><th scope="col">题型</th><th scope="col">状态</th><th scope="col">题干</th><th scope="col">难度</th><th scope="col">分值</th><th scope="col">标签</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+                <tbody>
+                @foreach (var question in _result.Items)
+                {
+                    <tr>
+                        <td><strong>@(string.IsNullOrWhiteSpace(question.ExternalCode) ? $"题目 #{question.Id}" : question.ExternalCode)</strong><small class="cell-secondary">@question.BankName</small></td>
+                        <td><span class="badge badge-neutral">@TypeLabel(question.Type)</span></td>
+                        <td><span class="badge @StatusClass(question.Status)">@StatusLabel(question.Status)</span></td>
+                        <td><p class="question-stem">@question.Stem</p></td>
+                        <td>@DifficultyLabel(question.Difficulty)</td>
+                        <td>@question.DefaultScore.ToString("0.##")</td>
+                        <td><span class="question-tags">@(string.IsNullOrWhiteSpace(question.Tags) ? "—" : question.Tags)</span></td>
+                        <td><a class="btn btn-secondary btn-sm" href="/content/questions/@question.Id/edit">查看 / 编辑</a></td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+        <Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" />
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "bankId")]
+    public long? BankId { get; set; }
+
+    private PagedResult<QuestionRow>? _result;
+    private IReadOnlyList<QuestionBankRow> _banks = [];
+    private IReadOnlyList<QuestionCategoryRow> _categories = [];
+    private IReadOnlyList<QuestionTagRow> _tags = [];
+    private CancellationTokenSource? _searchCancellation;
+    private string _keyword = "";
+    private string _type = "";
+    private string _status = "";
+    private long? _bankId;
+    private long? _categoryId;
+    private long? _tagId;
+    private int _pageIndex = 1;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private bool _categoriesLoading;
+    private int _categoryLoadVersion;
+    private string? _loadError;
+    private string? _filterError;
+    private string? _categoryError;
+    private string? _message;
+    private string _messageKind = "info";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _bankId = BankId;
+        await LoadFilterOptionsAsync();
+        await LoadCategoriesAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadFilterOptionsAsync()
+    {
+        _filterError = null;
+        try { _banks = await Service.GetBanksAsync(); }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目题库选项失败"); _filterError = "题库选项加载失败，题目列表仍可搜索。"; }
+        try { _tags = await Service.GetTagsAsync(); }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目标签选项失败"); _filterError = "筛选选项加载失败，请刷新页面重试。"; }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            _result = await Service.GetPagedAsync(new QuestionQuery(
+                string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(),
+                _bankId, string.IsNullOrWhiteSpace(_type) ? null : _type,
+                string.IsNullOrWhiteSpace(_status) ? null : _status, _tagId, _pageIndex, PageSize, _categoryId));
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目失败"); _loadError = "题目列表加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    private async Task OnKeywordInput(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            _pageIndex = 1;
+            await LoadAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task LoadCategoriesAsync()
+    {
+        var version = ++_categoryLoadVersion;
+        _categoryError = null;
+        if (_bankId is not { } bankId) { _categories = []; _categoriesLoading = false; return; }
+        _categoriesLoading = true;
+        try
+        {
+            var categories = await Service.GetCategoriesAsync(bankId);
+            if (version != _categoryLoadVersion || _bankId != bankId) return;
+            _categories = categories;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目分类选项失败"); if (version == _categoryLoadVersion) { _categories = []; _categoryError = "分类选项加载失败，题目列表仍可搜索。"; } }
+        finally { if (version == _categoryLoadVersion) _categoriesLoading = false; }
+    }
+
+    private async Task BankChangedAsync()
+    {
+        _categoryId = null;
+        _pageIndex = 1;
+        await LoadCategoriesAsync();
+        await LoadAsync();
+    }
+
+    private Task FiltersChangedAsync() { _pageIndex = 1; return LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+
+    private async Task ClearAsync()
+    {
+        _searchCancellation?.Cancel();
+        _keyword = "";
+        _type = "";
+        _status = "";
+        _bankId = null;
+        _categoryId = null;
+        _categoryLoadVersion++;
+        _categories = [];
+        _categoriesLoading = false;
+        _categoryError = null;
+        _tagId = null;
+        _pageIndex = 1;
+        _message = null;
+        await LoadAsync();
+    }
+
+    private static string TypeLabel(string type) => type switch { "SingleChoice" => "单选", "MultipleChoice" => "多选", "TrueFalse" => "判断", _ => type };
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+    private static string DifficultyLabel(string difficulty) => difficulty switch { "Easy" => "简单", "Medium" => "中等", "Hard" => "困难", _ => difficulty };
+
+    public ValueTask DisposeAsync()
+    {
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

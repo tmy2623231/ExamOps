@@ -1,0 +1,186 @@
+@using System.Globalization
+@using ExamTaskDetailDto = ExamOps.Model.Dtos.ExamTaskDetail
+@inject OrganizationService Organization
+@inject PaperService Papers
+@inject DataScopeService Scope
+@inject ICurrentUser CurrentUser
+@inject IClock Clock
+@inject ILogger<ExamTaskForm> Logger
+@implements IAsyncDisposable
+
+@if (!string.IsNullOrWhiteSpace(_optionsError)) { <Alert Kind="warning" Message="@_optionsError" /> }
+@if (!string.IsNullOrWhiteSpace(Error)) { <Alert Kind="danger" Message="@Error" /> }
+
+<form class="card exam-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+    <header class="card-header"><h2 class="card-title">@(IsCreate ? "草稿信息" : "编辑草稿")</h2><span class="field-hint">@(IsCreate ? "创建后可继续修改，发布前不会下发。" : "仅草稿状态可保存。")</span></header>
+    <div class="card-body">
+        <div class="form-grid">
+            @if (IsCreate)
+            {
+                <div class="field"><label for="task-code">任务编码</label><input id="task-code" class="input" @bind="_model.Code" maxlength="64" autocomplete="off" required /><span class="field-hint">1–64 个字符，创建后不可修改。</span></div>
+                <div class="field"><label for="task-department">所属部门</label><select id="task-department" class="select" value="@_model.DepartmentId" @onchange="DepartmentChangedAsync" required><option value="">请选择部门</option>@foreach (var department in _departments) { <option value="@department.Id">@department.Name</option> }</select></div>
+            }
+            <div class="field field-full"><label for="task-title">任务名称</label><input id="task-title" class="input" @bind="_model.Title" maxlength="200" autocomplete="off" required /></div>
+            <div class="field field-full"><label for="task-description">考试说明</label><textarea id="task-description" class="textarea" rows="3" @bind="_model.Description" maxlength="4000"></textarea></div>
+            <div class="field"><label for="task-date">考试日期</label><input id="task-date" class="input" type="date" value="@_model.ExamDate" @onchange="e => _model.ExamDate = e.Value?.ToString()" /></div>
+            <div class="field"><label for="task-paper-search">查找试卷版本</label><input id="task-paper-search" class="input" type="search" value="@_paperKeyword" @oninput="SearchPapers" placeholder="按试卷名称搜索" autocomplete="off" /></div>
+            <div class="field field-full"><label for="task-paper">试卷版本</label><select id="task-paper" class="select" @bind="_model.PaperVersionId"><option value="">暂不选择（发布前必须选择已发布版本）</option>@if (Detail?.PaperVersionId is not null && !_papers.Any(x => x.CurrentVersionId == Detail.PaperVersionId)) { <option value="@Detail.PaperVersionId">@Detail.PaperTitle · 当前已选版本</option> }@foreach (var paper in _papers) { <option value="@paper.CurrentVersionId">@paper.Title · v@(paper.VersionNo) · @(paper.Status == "Published" ? "已发布" : paper.Status == "Draft" ? "草稿" : paper.Status)</option> }</select><span class="field-hint">只能选择与任务部门一致的试卷；可先选草稿版本，但发布前必须改为已发布版本。搜索结果最多显示 20 个版本。</span></div>
+            <div class="field"><label for="task-from">开放时间</label><input id="task-from" class="input" type="datetime-local" value="@_model.AvailableFrom" @onchange="e => _model.AvailableFrom = e.Value?.ToString() ?? string.Empty" required /></div>
+            <div class="field"><label for="task-to">结束时间</label><input id="task-to" class="input" type="datetime-local" value="@_model.AvailableTo" @onchange="e => _model.AvailableTo = e.Value?.ToString() ?? string.Empty" required /></div>
+            <div class="field"><label for="task-duration">考试时长（分钟）</label><input id="task-duration" class="input" type="number" min="1" max="1440" step="1" inputmode="numeric" @bind="_model.DurationText" required /></div>
+            <div class="field"><label for="task-attempts">允许考试次数</label><input id="task-attempts" class="input" type="number" min="1" step="1" inputmode="numeric" @bind="_model.AttemptLimitText" required /></div>
+            <div class="field"><label for="task-score-policy">成绩策略</label><select id="task-score-policy" class="select" @bind="_model.ScorePolicy"><option value="Latest">取最后一次</option><option value="Highest">取最高分</option><option value="First">取第一次</option><option value="Average">取平均分</option></select></div>
+            <div class="field"><label for="task-pass-score">及格分（可选）</label><input id="task-pass-score" class="input" type="number" min="0" max="9999.99" step="0.01" @bind="_model.PassScoreText" /></div>
+            <div class="field"><label for="task-retake-approval">重考审批</label><select id="task-retake-approval" class="select" @bind="_model.RetakeApproval"><option value="None">无需审批</option><option value="Manager">管理员批准</option></select></div>
+            <div class="field"><label for="task-cooldown">重考冷却（分钟）</label><input id="task-cooldown" class="input" type="number" min="0" step="1" inputmode="numeric" @bind="_model.CooldownText" /></div>
+            <div class="field"><label for="task-result-policy">成绩公布</label><select id="task-result-policy" class="select" @bind="_model.ResultReleasePolicy"><option value="Immediate">交卷后立即公布</option><option value="AfterClose">考试关闭后公布</option><option value="Manual">管理员手动公布</option></select></div>
+            <div class="field"><label for="task-late-policy">超时成绩</label><select id="task-late-policy" class="select" @bind="_model.LateScorePolicy"><option value="Score">正常计分</option><option value="Zero">计 0 分</option></select></div>
+        </div>
+    </div>
+    <footer class="exam-form__footer"><button type="submit" class="btn btn-primary" disabled="@Busy"><Icon Name="check" />@(Busy ? "正在保存…" : IsCreate ? "创建考试草稿" : "保存草稿")</button></footer>
+</form>
+
+@code {
+    [Parameter] public bool IsCreate { get; set; }
+    [Parameter] public ExamTaskDetailDto? Detail { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback<ExamTaskFormModel> Saved { get; set; }
+
+    private ExamTaskFormModel _model = new();
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private IReadOnlyList<PaperRow> _papers = [];
+    private CancellationTokenSource? _searchCancellation;
+    private string _paperKeyword = "";
+    private int _papersLoadVersion;
+    private string? _optionsError;
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loaded) return;
+        _loaded = true;
+        var localNow = TimeFormat.ToLocal(Clock.UtcNow);
+        _model = Detail is null ? NewModel(localNow.AddMinutes(5), localNow.AddHours(2)) : FromDetail(Detail);
+        try
+        {
+            var all = await Organization.GetDepartmentsAsync();
+            var allowed = new List<DepartmentRow>();
+            foreach (var department in all.Where(x => x.IsActive))
+                if (await Scope.CanAccessDepartmentAsync(department.Id, IsCreate ? Permissions.ExamTaskCreate : Permissions.ExamTaskUpdate)) allowed.Add(department);
+            _departments = allowed;
+            if (IsCreate && _model.DepartmentId == 0) _model.DepartmentId = allowed.FirstOrDefault()?.Id ?? 0;
+            await LoadPapersAsync();
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "加载考试表单部门或试卷选项失败"); _optionsError = "部门或试卷选项加载失败，请刷新页面后重试。"; }
+    }
+
+    private async Task DepartmentChangedAsync(ChangeEventArgs args)
+    {
+        _model.DepartmentId = long.TryParse(args.Value?.ToString(), out var id) && id > 0 ? id : 0;
+        _model.PaperVersionId = null;
+        _papers = [];
+        await LoadPapersAsync();
+    }
+
+    private async Task SearchPapers(ChangeEventArgs args)
+    {
+        _paperKeyword = args.Value?.ToString() ?? "";
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            await LoadPapersAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task LoadPapersAsync()
+    {
+        var version = ++_papersLoadVersion;
+        var departmentId = _model.DepartmentId;
+        if (departmentId <= 0) { _papers = []; return; }
+        var keyword = string.IsNullOrWhiteSpace(_paperKeyword) ? null : _paperKeyword.Trim();
+        try
+        {
+            var result = await Papers.GetPagedAsync(new PaperQuery(keyword, departmentId, null, 1, 20));
+            if (version != _papersLoadVersion) return;
+            _papers = result.Items;
+            _optionsError = null;
+        }
+        catch (Exception ex) { if (version == _papersLoadVersion) { Logger.LogWarning(ex, "加载考试表单试卷选项失败"); _papers = []; _optionsError = "试卷版本加载失败，可稍后重新搜索；已有选择会保留。"; } }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (Busy) return;
+        Error = Validate();
+        if (Error is not null) return;
+        await Saved.InvokeAsync(_model);
+    }
+
+    private string? Validate()
+    {
+        if (IsCreate && string.IsNullOrWhiteSpace(_model.Code)) return "请填写任务编码。";
+        if (IsCreate && _model.DepartmentId <= 0) return "请选择任务所属部门。";
+        if (string.IsNullOrWhiteSpace(_model.Title)) return "请填写任务名称。";
+        if (!TryParseTime(_model.AvailableFrom, out var from) || !TryParseTime(_model.AvailableTo, out var to)) return "请填写完整的开放和结束时间。";
+        if (to <= from) return "结束时间必须晚于开放时间。";
+        if (!int.TryParse(_model.DurationText, out var duration) || duration is < 1 or > 1440) return "考试时长需为 1–1440 分钟。";
+        if (!int.TryParse(_model.AttemptLimitText, out var attempts) || attempts < 1) return "允许考试次数至少为 1。";
+        if (!int.TryParse(_model.CooldownText, out var cooldown) || cooldown < 0) return "重考冷却时间不能为负数。";
+        if (!string.IsNullOrWhiteSpace(_model.PassScoreText) && (!decimal.TryParse(_model.PassScoreText, NumberStyles.Number, CultureInfo.InvariantCulture, out var score) || score is < 0 or > 9999.99m)) return "及格分需为 0–9999.99。";
+        return null;
+    }
+
+    public CreateExamTaskInput CreateInput() => new(_model.Code.Trim(), _model.Title.Trim(), _model.Description?.Trim(), _model.DepartmentId,
+        ParseDate(_model.ExamDate), ParseVersion(_model.PaperVersionId), ParseTime(_model.AvailableFrom), ParseTime(_model.AvailableTo),
+        int.Parse(_model.DurationText), int.Parse(_model.AttemptLimitText), _model.ScorePolicy, _model.RetakeApproval,
+        int.Parse(_model.CooldownText), ParseScore(_model.PassScoreText), _model.ResultReleasePolicy, _model.LateScorePolicy);
+
+    public UpdateExamTaskInput UpdateInput() => new(Detail!.RowVersion, _model.Title.Trim(), _model.Description?.Trim(), ParseDate(_model.ExamDate),
+        ParseVersion(_model.PaperVersionId), ParseTime(_model.AvailableFrom), ParseTime(_model.AvailableTo), int.Parse(_model.DurationText),
+        int.Parse(_model.AttemptLimitText), _model.ScorePolicy, _model.RetakeApproval, int.Parse(_model.CooldownText),
+        ParseScore(_model.PassScoreText), _model.ResultReleasePolicy, _model.LateScorePolicy);
+
+    private static ExamTaskFormModel NewModel(DateTime from, DateTime to) => new()
+    {
+        DepartmentId = 0, AvailableFrom = ExamLabels.InputTime(DateTime.SpecifyKind(from, DateTimeKind.Unspecified)),
+        AvailableTo = ExamLabels.InputTime(DateTime.SpecifyKind(to, DateTimeKind.Unspecified)), DurationText = "60", AttemptLimitText = "1",
+        CooldownText = "0", ScorePolicy = "Latest", RetakeApproval = "None", ResultReleasePolicy = "AfterClose", LateScorePolicy = "Score"
+    };
+    private static ExamTaskFormModel FromDetail(ExamTaskDetailDto detail) => new()
+    {
+        Code = detail.Code, Title = detail.Title, Description = detail.Description, DepartmentId = detail.DepartmentId,
+        ExamDate = detail.ExamDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), PaperVersionId = detail.PaperVersionId?.ToString(CultureInfo.InvariantCulture),
+        AvailableFrom = ExamLabels.InputTime(detail.AvailableFrom), AvailableTo = ExamLabels.InputTime(detail.AvailableTo),
+        DurationText = detail.DurationMinutes.ToString(CultureInfo.InvariantCulture), AttemptLimitText = detail.AttemptLimit.ToString(CultureInfo.InvariantCulture),
+        ScorePolicy = detail.ScorePolicy, RetakeApproval = detail.RetakeApproval, CooldownText = detail.RetakeCooldownMinutes.ToString(CultureInfo.InvariantCulture),
+        PassScoreText = detail.PassScore?.ToString(CultureInfo.InvariantCulture), ResultReleasePolicy = detail.ResultReleasePolicy, LateScorePolicy = detail.LateScorePolicy
+    };
+    private static readonly string[] DateTimeFormats = ["yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm:ss.fff"];
+    private static bool TryParseTime(string? value, out DateTime result)
+    {
+        result = default;
+        return value is not null && DateTime.TryParseExact(value, DateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out result);
+    }
+    private static DateTime ParseTime(string value) => DateTime.SpecifyKind(DateTime.ParseExact(value, DateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None), DateTimeKind.Unspecified);
+    private static DateOnly? ParseDate(string? value) => DateOnly.TryParseExact(value, "yyyy-MM-dd", out var date) ? date : null;
+    private static long? ParseVersion(string? value) => long.TryParse(value, out var id) && id > 0 ? id : null;
+    private static decimal? ParseScore(string? value) => decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var score) ? score : null;
+
+    public ValueTask DisposeAsync()
+    {
+        _papersLoadVersion++;
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

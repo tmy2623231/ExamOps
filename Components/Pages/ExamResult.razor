@@ -1,0 +1,94 @@
+@page "/exams/results/{Id:long}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject ExamAttemptService Service
+@inject IClock Clock
+@inject ILogger<ExamResult> Logger
+
+<div class="exam-page">
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在读取成绩…</div>
+    }
+    else if (_result is null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@(_error ?? "考试结果不存在或不属于当前账号。")" /><a class="btn btn-secondary" href="/exams/my"><Icon Name="arrow-left" />返回我的考试</a></section>
+    }
+    else
+    {
+        <PageHeader Title="@_result.TaskTitle" Description="@($"第 {_result.AttemptNo} 次作答结果")">
+            <Actions><button type="button" class="btn btn-secondary" disabled="@_loading" @onclick="LoadAsync"><Icon Name="refresh" />刷新成绩</button><a class="btn btn-secondary" href="/exams/my"><Icon Name="arrow-left" />我的考试</a></Actions>
+        </PageHeader>
+        @if (!_result.IsPublished)
+        {
+            <Alert Kind="info" Message="@UnavailableMessage" />
+        }
+        else
+        {
+            <section class="card card-body exam-result-card">
+                <span class="badge @ExamLabels.BadgeClass(_result.Status)">@ExamLabels.AttemptStatus(_result.Status)</span>
+                @if (_result.Score is not null)
+                {
+                    <p class="exam-result-score">@_result.Score.Value.ToString("0.##")<small> / @_result.MaxScore.ToString("0.##") 分</small></p>
+                }
+                else
+                {
+                    <Alert Kind="info" Message="答卷已提交，成绩仍在阅卷中。阅卷完成后会显示在这里。" />
+                }
+            </section>
+        }
+        <section class="card exam-spaced">
+            <div class="exam-section-head"><h2>成绩信息</h2></div>
+            <dl class="exam-facts">
+                <div><dt>考试任务</dt><dd>@_result.TaskTitle</dd></div>
+                <div><dt>答卷状态</dt><dd>@ExamLabels.AttemptStatus(_result.Status)</dd></div>
+                <div><dt>公布状态</dt><dd>@ExamLabels.ResultStatus(_result.ResultStatus)</dd></div>
+                <div><dt>交卷时间</dt><dd>@TimeFormat.Display(_result.SubmittedAt)</dd></div>
+                <div><dt>阅卷时间</dt><dd>@TimeFormat.Display(_result.GradedAt)</dd></div>
+                @if (_result.IsPublished)
+                {
+                    <div><dt>最终分来源答卷</dt><dd>@(_result.FinalAttemptId?.ToString() ?? "无有效答卷")</dd></div>
+                    <div><dt>最终分来源次数</dt><dd>@(_result.FinalAttemptNo is null ? "—" : $"第 {_result.FinalAttemptNo} 次")</dd></div>
+                    <div><dt>成绩发布批次</dt><dd>@(_result.ReleaseNo is null ? "—" : $"第 {_result.ReleaseNo} 次")</dd></div>
+                }
+                <div><dt>当前服务器时间</dt><dd>@TimeFormat.Display(_serverNow)</dd></div>
+            </dl>
+        </section>
+        <p class="field-hint exam-spaced">如对成绩有疑问，请联系考试管理员。是否允许再次考试以“我的考试”中的最新状态为准。</p>
+    }
+</div>
+
+@code {
+    [Parameter] public long Id { get; set; }
+    private AttemptResultDto? _result;
+    private bool _loading = true;
+    private string? _error;
+    private DateTime _serverNow;
+
+    private string UnavailableMessage
+    {
+        get
+        {
+            var result = _result;
+            if (result is null) return "成绩状态不可用。";
+            return result.Status switch
+            {
+                "Voided" => "本次答卷已作废，请联系考试管理员了解原因或重新考试安排。",
+                "InProgress" => "本次考试尚未交卷，请返回我的考试继续作答。",
+                "Submitted" or "AutoSubmitted" when result.ResultStatus == "Unpublished" => "答卷已提交，成绩尚未公布，请等待管理员通知。",
+                "Withdrawn" => "成绩公布已撤回，请等待管理员重新公布。",
+                _ => "成绩尚未阅卷或尚未发布，请稍后刷新查看。"
+            };
+        }
+    }
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _error = null; _serverNow = Clock.UtcNow;
+        try { _result = await Service.GetResultAsync(Id); }
+        catch (Exception ex) { Logger.LogError(ex, "读取考生成绩失败"); _error = "成绩读取失败，请检查连接后重试。"; }
+        finally { _loading = false; }
+    }
+}

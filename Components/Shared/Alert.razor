@@ -1,0 +1,15 @@
+@if (!string.IsNullOrWhiteSpace(Message))
+{
+    <div class="alert @($"alert-{Kind}")" role="@(Kind == "danger" ? "alert" : "status")">
+        <span>@Message</span>
+        @if (Dismissible) { <button type="button" class="btn btn-ghost btn-sm" aria-label="关闭提示" @onclick="Dismiss">关闭</button> }
+    </div>
+}
+
+@code {
+    [Parameter] public string Kind { get; set; } = "info";
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public bool Dismissible { get; set; }
+
+    private void Dismiss() => Message = null;
+}

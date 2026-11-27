@@ -1,0 +1,387 @@
+@page "/content/questions/new"
+@page "/content/questions/{Id:long}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.QuestionRead)]
+@using System.Globalization
+@using Microsoft.AspNetCore.Components.Forms
+@inject QuestionService Service
+@inject DataScopeService Scope
+@inject NavigationManager Navigation
+@inject ILogger<QuestionEditor> Logger
+<PageHeader Title="@(Id.HasValue ? "题目详情" : "新建题目")" Description="维护题干、选项、标准答案、分类与标签；发布后的版本不可直接修改。">
+    <Actions><a class="btn btn-secondary" href="/content/questions"><Icon Name="arrow-left" />返回题目列表</a></Actions>
+</PageHeader>
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" /> }
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载题目…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadEditorAsync">重新加载</button></section>
+}
+else if (!Id.HasValue && _createBankIds.Count == 0)
+{
+    <section class="card"><EmptyState Title="没有可创建的题库" Description="请联系管理员为当前部门配置题库与题目创建权限。" IconName="grid" /></section>
+}
+else
+{
+    if (!string.IsNullOrWhiteSpace(_readOnlyReason)) { <Alert Kind="info" Message="@_readOnlyReason" /> }
+    if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }
+    if (!string.IsNullOrWhiteSpace(_categoryError)) { <Alert Kind="danger" Message="@_categoryError" /><button type="button" class="btn btn-secondary" @onclick="LoadCategoriesAsync">重试分类加载</button> }
+    <div class="question-editor-layout">
+        <form id="question-editor-form" class="card question-editor-form" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+            <header class="card-header">
+                <div class="editor-heading"><h2 class="card-title">题目内容</h2>@if (!string.IsNullOrWhiteSpace(_status)) { <span class="badge @StatusClass(_status)">@StatusLabel(_status)</span> }</div>
+                @if (Id.HasValue) { <span class="field-hint">题目 ID：@Id</span> }
+            </header>
+            <div class="card-body">
+                <div class="form-grid">
+                    <div class="field"><label for="question-bank">题库</label><select id="question-bank" class="select" @bind="_bankId" @bind:after="BankChangedAsync" disabled="@(_readOnly || Id.HasValue)"><option value="0">请选择题库</option>@foreach (var bank in _banks.Where(x => x.Status == "Active" && (Id.HasValue || _createBankIds.Contains(x.Id)))) { <option value="@bank.Id">@bank.Name</option> }</select></div>
+                    <div class="field"><label for="external-code">外部编码（可选）</label><input id="external-code" class="input" @bind="_externalCode" maxlength="128" autocomplete="off" disabled="@_readOnly" /></div>
+                    <div class="field"><label for="question-type">题型</label><select id="question-type" class="select" @bind="_type" @bind:after="TypeChanged" disabled="@(_readOnly || (Id.HasValue && _detail?.Status == "Published"))"><option value="SingleChoice">单选题</option><option value="MultipleChoice">多选题</option><option value="TrueFalse">判断题</option></select></div>
+                    <div class="field"><label for="question-difficulty">难度</label><select id="question-difficulty" class="select" @bind="_difficulty" disabled="@_readOnly"><option value="Easy">简单</option><option value="Medium">中等</option><option value="Hard">困难</option></select></div>
+                    <div class="field"><label for="question-score">默认分值</label><input id="question-score" class="input" type="number" min="0.01" max="9999.99" step="0.01" inputmode="decimal" @bind="_scoreText" disabled="@_readOnly" /></div>
+                </div>
+                <div class="field"><label for="question-stem">题干</label><textarea id="question-stem" class="textarea" rows="5" maxlength="10000" @bind="_stem" disabled="@_readOnly"></textarea></div>
+                <QuestionOptionsEditor Type="@_type" Options="_options" Disabled="_readOnly" CorrectChanged="SetCorrect" RemoveChanged="RemoveOption" AddChanged="AddOption" />
+                <QuestionTaxonomyPicker Categories="_categories" Tags="_tags" SelectedCategoryIds="_selectedCategoryIds" SelectedTagNames="_selectedTagNames" Disabled="_readOnly" CategoryChanged="ToggleCategory" TagChanged="ToggleTag" NewTagRequested="OpenTagEditor" />
+                <div class="field"><label for="question-analysis">解析（可选）</label><textarea id="question-analysis" class="textarea" rows="4" maxlength="10000" @bind="_analysis" disabled="@(_readOnly || !_canSeeAnswers)"></textarea><span class="field-hint">@(_canSeeAnswers ? "解析仅在教师查看题目时展示。" : "当前账号为只读范围，不展示标准答案与解析。")</span></div>
+            </div>
+        </form>
+        @if (Id.HasValue)
+        {
+            <QuestionVersionTimeline Versions="_versions" />
+        }
+    </div>
+    <QuestionEditorActions IsNew="@(!Id.HasValue)" ReadOnly="_readOnly" CanCopyDraft="@(_detail?.Status == "Published" && _detail.DraftVersionId == 0 && _canManageCurrentBank)" CanPublish="@(Id.HasValue && _detail?.DraftVersionId > 0 && _detail.Status != "Archived" && _canManageCurrentBank)" CanArchive="@(Id.HasValue && _detail?.Status != "Archived" && _canManageCurrentBank)" HasDraft="@(_detail?.DraftVersionId > 0)" Busy="_busy" Save="SaveAsync" CopyDraft="CopyDraftAsync" Publish="RequestPublish" Archive="RequestArchive" />
+}
+<Modal IsOpen="_tagEditorOpen" Title="新建标签" OnClose="CloseTagEditor">
+    <ChildContent>
+        @if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }
+        <div class="field"><label for="editor-new-tag">标签名称</label><input id="editor-new-tag" class="input" @bind="_newTagName" maxlength="128" autocomplete="off" /></div>
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" @onclick="CloseTagEditor">取消</button><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="CreateTagAsync">@(_busy ? "正在创建…" : "创建并选用")</button></FooterContent>
+</Modal>
+<Modal IsOpen="_confirmOpen" Title="@_confirmTitle" OnClose="CloseConfirm">
+    <ChildContent><p>@_confirmMessage</p>@if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }</ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" @onclick="CloseConfirm">取消</button><button type="button" class="btn @(_confirmDanger ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmAsync">@(_busy ? "正在处理…" : "确认")</button></FooterContent>
+</Modal>
+@code {
+    [Parameter] public long? Id { get; set; }
+    [SupplyParameterFromQuery(Name = "bankId")] public long? BankId { get; set; }
+    private QuestionDetail? _detail;
+    private IReadOnlyList<QuestionBankRow> _banks = [];
+    private IReadOnlyList<QuestionCategoryRow> _categories = [];
+    private IReadOnlyList<QuestionTagRow> _tags = [];
+    private IReadOnlyList<QuestionVersionRow> _versions = [];
+    private List<QuestionOptionEdit> _options = [];
+    private HashSet<long> _selectedCategoryIds = [];
+    private HashSet<string> _selectedTagNames = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<long> _createBankIds = [];
+    private HashSet<long> _writableBankIds = [];
+    private long _bankId;
+    private long _rowVersion;
+    private string _externalCode = "";
+    private string _type = "SingleChoice";
+    private string _stem = "";
+    private string _difficulty = "Medium";
+    private string _scoreText = "1";
+    private string? _analysis;
+    private bool _trueFalseAnswer = true;
+    private string _status = "";
+    private string? _newTagName;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _readOnly = true;
+    private bool _canSeeAnswers;
+    private bool _canManageCurrentBank;
+    private bool _tagEditorOpen;
+    private bool _confirmOpen;
+    private bool _confirmDanger;
+    private string _confirmAction = "";
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private string? _loadError;
+    private string? _formError;
+    private string? _categoryError;
+    private string? _readOnlyReason;
+    private string? _message;
+    private string _messageKind = "info";
+    protected override Task OnInitializedAsync() => LoadEditorAsync();
+    private async Task LoadEditorAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        _formError = null;
+        try
+        {
+            _banks = await Service.GetBanksAsync();
+            _tags = await Service.GetTagsAsync();
+            _createBankIds = await GetScopedBankIdsAsync(Permissions.QuestionCreate);
+            _writableBankIds = await GetScopedBankIdsAsync(Permissions.QuestionUpdate);
+            if (Id is { } questionId)
+            {
+                _detail = await Service.GetDetailAsync(questionId);
+                if (_detail is null) { _loadError = "题目不存在或已超出当前数据范围。"; return; }
+                ApplyDetail(_detail);
+            }
+            else
+            {
+                _bankId = BankId.HasValue && _banks.Any(x => x.Id == BankId && x.Status == "Active" && _createBankIds.Contains(x.Id))
+                    ? BankId.Value : _banks.FirstOrDefault(x => _createBankIds.Contains(x.Id))?.Id ?? 0;
+                ResetOptions();
+            }
+            _canManageCurrentBank = Id.HasValue ? _writableBankIds.Contains(_bankId) : _createBankIds.Contains(_bankId);
+            _canSeeAnswers = !Id.HasValue || await CanSeeAnswersAsync(_bankId);
+            if (!_canSeeAnswers) { foreach (var option in _options) option.IsCorrect = false; }
+            UpdateReadOnlyState();
+            await LoadCategoriesAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目编辑器失败"); _loadError = "题目编辑器加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+    private async Task<HashSet<long>> GetScopedBankIdsAsync(string permission)
+    {
+        var ids = new HashSet<long>();
+        foreach (var bank in _banks.Where(x => x.Status == "Active"))
+        {
+            if (await Scope.CanAccessDepartmentAsync(bank.DepartmentId, permission)) ids.Add(bank.Id);
+        }
+        return ids;
+    }
+    private async Task<bool> CanSeeAnswersAsync(long bankId)
+    {
+        var bank = _banks.FirstOrDefault(x => x.Id == bankId);
+        if (bank is null) return false;
+        foreach (var permission in new[] { Permissions.QuestionUpdate, Permissions.QuestionPublish, Permissions.QuestionImport })
+        {
+            if (await Scope.CanAccessDepartmentAsync(bank.DepartmentId, permission)) return true;
+        }
+        return false;
+    }
+    private void ApplyDetail(QuestionDetail detail)
+    {
+        _bankId = detail.BankId;
+        _rowVersion = detail.RowVersion;
+        _externalCode = detail.ExternalCode ?? "";
+        _type = detail.Type;
+        _stem = detail.Stem;
+        _difficulty = detail.Difficulty;
+        _scoreText = detail.DefaultScore.ToString("0.##", CultureInfo.InvariantCulture);
+        _analysis = detail.Analysis;
+        _status = detail.Status;
+        _versions = detail.Versions;
+        _selectedCategoryIds = detail.CategoryIds.ToHashSet();
+        _selectedTagNames = new HashSet<string>(detail.TagNames, StringComparer.OrdinalIgnoreCase);
+        _trueFalseAnswer = detail.TrueFalseAnswer;
+        _options = detail.Options.Select(x => new QuestionOptionEdit { Label = x.Label, Content = x.Content, IsCorrect = x.IsCorrect, SortOrder = x.SortOrder }).ToList();
+        if (_type == "TrueFalse") ResetOptions();
+        else if (_options.Count < 2) ResetOptions();
+    }
+    private void UpdateReadOnlyState()
+    {
+        _readOnly = !_canManageCurrentBank || _status == "Archived" || (Id.HasValue && _detail?.DraftVersionId == 0);
+        _readOnlyReason = _status == "Archived" ? "已归档题目只读，不能再保存、发布或创建草稿。"
+            : !_canManageCurrentBank ? "当前账号对题库只读，不能修改题目。"
+            : _detail?.Status == "Published" && _detail.DraftVersionId == 0 ? "已发布版本只读，请复制为新草稿后修改。"
+            : Id.HasValue && _detail?.DraftVersionId == 0 ? "当前没有可编辑的草稿版本。" : null;
+    }
+    private async Task LoadCategoriesAsync()
+    {
+        _categoryError = null;
+        if (_bankId <= 0) { _categories = []; return; }
+        try { _categories = await Service.GetCategoriesAsync(_bankId); }
+        catch (Exception ex) { Logger.LogError(ex, "加载题目分类失败"); _categoryError = "分类加载失败，请稍后重试。"; }
+    }
+    private async Task BankChangedAsync()
+    {
+        _selectedCategoryIds.Clear();
+        _canManageCurrentBank = Id.HasValue ? _writableBankIds.Contains(_bankId) : _createBankIds.Contains(_bankId);
+        _canSeeAnswers = !Id.HasValue || await CanSeeAnswersAsync(_bankId);
+        if (!_canSeeAnswers) { foreach (var option in _options) option.IsCorrect = false; }
+        UpdateReadOnlyState();
+        await LoadCategoriesAsync();
+    }
+    private void TypeChanged() => ResetOptions();
+    private void ResetOptions()
+    {
+        if (_type == "TrueFalse")
+        {
+            _options = [NewOption("A", "正确", _trueFalseAnswer, 1), NewOption("B", "错误", !_trueFalseAnswer, 2)];
+            return;
+        }
+        var content = _options.Where(x => x.Content.Length > 0).Take(6).ToArray();
+        _options = Enumerable.Range(0, Math.Max(2, content.Length)).Select(i => content.ElementAtOrDefault(i) is { } option
+            ? new QuestionOptionEdit { Label = "ABCDEF"[i].ToString(), Content = option.Content, IsCorrect = _type == "SingleChoice" && i == 0, SortOrder = i + 1 }
+            : NewOption("ABCDEF"[i].ToString(), "", _type == "SingleChoice" && i == 0, i + 1)).ToList();
+    }
+    private static QuestionOptionEdit NewOption(string label, string content, bool correct, int sortOrder) => new() { Label = label, Content = content, IsCorrect = correct, SortOrder = sortOrder };
+    private void SetCorrect(QuestionOptionEdit option)
+    {
+        if (_type == "SingleChoice") { foreach (var item in _options) item.IsCorrect = item == option; }
+        else if (_type == "MultipleChoice") { option.IsCorrect = !option.IsCorrect; }
+        else { _trueFalseAnswer = option.Label == "A"; ResetOptions(); }
+    }
+    private void RemoveOption(QuestionOptionEdit option)
+    {
+        if (_options.Count <= 2) return;
+        _options.Remove(option);
+        RenumberOptions();
+    }
+    private void AddOption()
+    {
+        if (_options.Count >= 6) return;
+        var index = _options.Count;
+        _options.Add(NewOption("ABCDEF"[index].ToString(), "", false, index + 1));
+    }
+    private void RenumberOptions()
+    {
+        for (var i = 0; i < _options.Count; i++) { _options[i].Label = "ABCDEF"[i].ToString(); _options[i].SortOrder = i + 1; }
+    }
+    private void ToggleCategory(long id) { if (_selectedCategoryIds.Contains(id)) _selectedCategoryIds.Remove(id); else _selectedCategoryIds.Add(id); }
+    private void ToggleTag(string name)
+    {
+        var existing = _selectedTagNames.FirstOrDefault(x => x.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) _selectedTagNames.Remove(existing); else _selectedTagNames.Add(name);
+    }
+    private void OpenTagEditor() { _newTagName = ""; _formError = null; _tagEditorOpen = true; }
+    private void CloseTagEditor() { if (!_busy) _tagEditorOpen = false; }
+    private async Task CreateTagAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.CreateTagAsync(_newTagName ?? "");
+            if (!result.IsSuccess) { _formError = result.Error ?? "标签创建失败。"; return; }
+            _selectedTagNames.Add(result.Value!.Name);
+            _tagEditorOpen = false;
+            _tags = await Service.GetTagsAsync();
+            Show("标签已创建并加入题目。", "success");
+        }
+        catch (Exception ex) { Logger.LogError(ex, "在题目编辑器创建标签失败"); _formError = "标签创建失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private string? ValidateInput()
+    {
+        if (_bankId <= 0) return "请选择题库。";
+        if (string.IsNullOrWhiteSpace(_stem)) return "请输入题干。";
+        if (!decimal.TryParse(_scoreText, NumberStyles.Number, CultureInfo.InvariantCulture, out var score) || score < 0.01m || score > 9999.99m || decimal.Round(score, 2) != score) return "分值须在 0.01–9999.99 之间，最多两位小数。";
+        if (_type != "TrueFalse")
+        {
+            if (_options.Count is < 2 or > 6) return "选择题须有 2–6 个选项。";
+            if (_options.Any(x => string.IsNullOrWhiteSpace(x.Content))) return "请填写全部选项内容。";
+            var correct = _options.Count(x => x.IsCorrect);
+            if (_type == "SingleChoice" && correct != 1) return "单选题必须且只能设置一个正确项。";
+            if (_type == "MultipleChoice" && correct < 2) return "多选题至少需要两个正确项。";
+        }
+        return null;
+    }
+    private QuestionEditInput BuildInput()
+    {
+        IReadOnlyList<QuestionOptionInput> options;
+        string answerValue = "";
+        IReadOnlyList<string> answerValues = [];
+        if (_type == "TrueFalse")
+        {
+            options = [new("A", "正确", _trueFalseAnswer, 1), new("B", "错误", !_trueFalseAnswer, 2)];
+        }
+        else
+        {
+            options = _options.Select((x, i) => new QuestionOptionInput("ABCDEF"[i].ToString(), x.Content.Trim(), x.IsCorrect, i + 1)).ToArray();
+            answerValues = _options.Where(x => x.IsCorrect).Select(x => x.Label).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+            if (_type == "SingleChoice") answerValue = answerValues.FirstOrDefault() ?? "";
+        }
+        return new(_bankId, string.IsNullOrWhiteSpace(_externalCode) ? null : _externalCode.Trim(), _type, _stem.Trim(), _difficulty,
+            decimal.Parse(_scoreText, NumberStyles.Number, CultureInfo.InvariantCulture), string.IsNullOrWhiteSpace(_analysis) ? null : _analysis.Trim(),
+            options, _selectedTagNames.OrderBy(x => x, StringComparer.Ordinal).ToArray(), _selectedCategoryIds.ToArray(), answerValue, answerValues, _trueFalseAnswer);
+    }
+    private async Task SaveAsync()
+    {
+        if (_busy || _readOnly) return;
+        var validation = ValidateInput();
+        if (validation is not null) { _formError = validation; return; }
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var input = BuildInput();
+            if (Id is { } questionId)
+            {
+                var result = await Service.UpdateAsync(questionId, input, _rowVersion);
+                if (!result.IsSuccess) { _formError = result.Error ?? "题目保存失败。"; return; }
+                Show("草稿已保存。", "success");
+                await LoadEditorAsync();
+            }
+            else
+            {
+                var result = await Service.CreateAsync(input);
+                if (!result.IsSuccess) { _formError = result.Error ?? "题目创建失败。"; return; }
+                Navigation.NavigateTo($"/content/questions/{result.Value!.QuestionId}/edit", forceLoad: true);
+            }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "保存题目失败"); _formError = "题目保存失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private async Task CopyDraftAsync()
+    {
+        if (_busy || _detail is null) return;
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.CreateDraftVersionAsync(_detail.Id, _rowVersion);
+            if (!result.IsSuccess) { _formError = result.Error ?? "草稿复制失败。"; return; }
+            Show("已复制为新草稿，现在可以编辑。", "success");
+            await LoadEditorAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "复制题目草稿失败"); _formError = "草稿复制失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private void RequestPublish()
+    {
+        _confirmAction = "Publish";
+        _confirmTitle = "发布草稿";
+        _confirmMessage = "确认发布最近一次保存的草稿？发布后该版本与选项将不可修改。";
+        _confirmDanger = false;
+        _formError = null;
+        _confirmOpen = true;
+    }
+    private void RequestArchive()
+    {
+        _confirmAction = "Archive";
+        _confirmTitle = "归档题目";
+        _confirmMessage = "确认归档这道题？归档后题目只读，且不能再发布或创建新草稿。";
+        _confirmDanger = true;
+        _formError = null;
+        _confirmOpen = true;
+    }
+    private void CloseConfirm() { if (!_busy) _confirmOpen = false; }
+    private async Task ConfirmAsync()
+    {
+        if (_busy || _detail is null) return;
+        _busy = true;
+        _formError = null;
+        try
+        {
+            Result result;
+            if (_confirmAction == "Publish")
+            {
+                if (_detail.DraftVersionId <= 0) { _formError = "没有可发布的草稿。"; return; }
+                result = await Service.PublishAsync(_detail.Id, _detail.DraftVersionId, _rowVersion);
+            }
+            else { result = await Service.ArchiveAsync(_detail.Id, _rowVersion); }
+            if (!result.IsSuccess) { _formError = result.Error ?? "操作失败。"; return; }
+            _confirmOpen = false;
+            Show(_confirmAction == "Publish" ? "草稿已发布。" : "题目已归档。", "success");
+            await LoadEditorAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "发布或归档题目失败"); _formError = "操作失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+}

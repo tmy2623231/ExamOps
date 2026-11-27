@@ -1,0 +1,41 @@
+.section-editor { min-width: 0; margin-bottom: var(--space-5); }
+.section-heading { align-items: flex-start; }
+.section-heading > div:first-child { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.section-number { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; color: var(--color-primary); background: var(--color-primary-soft); border-radius: var(--radius-pill); font-weight: 700; }
+.section-heading h2 { min-width: 0; overflow-wrap: anywhere; }
+.section-tools { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.section-tools .btn { min-height: 44px; }
+.section-delete { color: var(--color-danger-ink); }
+.section-fields { margin-bottom: var(--space-5); }
+.retry-inline { justify-self: start; min-height: 44px; }
+.pool-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin-bottom: var(--space-4); }
+.pool-summary > div { display: grid; gap: var(--space-1); padding: var(--space-4); background: var(--color-surface-2); border-radius: var(--radius-md); }
+.pool-summary strong { color: var(--color-ink); font-size: var(--text-xl); }
+.pool-summary span { color: var(--color-ink-2); font-size: var(--text-sm); }
+.blueprint-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin: var(--space-4) 0; }
+.blueprint-action .btn { min-height: 44px; }
+.fixed-picker { padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+.subsection-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-3); }
+.subsection-heading h3 { margin: 0; font-size: var(--text-md); }
+.candidate-filters { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: var(--space-3); margin-bottom: var(--space-4); }
+.candidate-filters .field { min-width: 0; margin: 0; }
+.candidate-list { border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+.candidate-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border); }
+.candidate-row:last-child { border-bottom: 0; }
+.candidate-copy { min-width: 0; }
+.candidate-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--color-ink-3); font-size: var(--text-xs); }
+.candidate-copy p, .selected-question-copy p { margin: var(--space-2) 0 0; line-height: var(--leading-base); overflow-wrap: anywhere; }
+.candidate-row .btn { flex: 0 0 auto; min-height: 44px; }
+.candidate-state { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-3); min-height: 120px; padding: var(--space-4); background: var(--color-surface-2); border-radius: var(--radius-md); text-align: center; }
+.candidate-state .alert { width: 100%; margin: 0; }
+.candidate-state p { margin: 0; }
+.candidate-state .btn { min-height: 44px; }
+.question-list-heading { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
+.question-empty { padding: var(--space-4); background: var(--color-surface-2); border-radius: var(--radius-md); }
+.selected-questions { display: grid; gap: var(--space-2); }
+.selected-question { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.selected-question-copy { min-width: 0; }
+.selected-question .btn { flex: 0 0 auto; min-height: 44px; color: var(--color-danger-ink); }
+@media (max-width: 900px) { .candidate-filters { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) { .section-heading { align-items: stretch; flex-direction: column; } .section-tools { justify-content: flex-end; } .candidate-row, .selected-question { align-items: stretch; flex-direction: column; } .candidate-row .btn, .selected-question .btn { width: 100%; } }
+@media (max-width: 420px) { .pool-summary { grid-template-columns: minmax(0, 1fr); } .section-tools { justify-content: stretch; } .section-tools .btn { flex: 1 1 auto; } }

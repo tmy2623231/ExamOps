@@ -1,0 +1,14 @@
+bin/
+obj/
+Data/
+docs/
+scripts/
+.vs/
+*.user
+*.suo
+*.log
+*.dump
+*.bak
+appsettings.Development.json
+**/appsettings.json
+!**/appsettings.example.json

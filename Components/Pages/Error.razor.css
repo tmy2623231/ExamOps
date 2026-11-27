@@ -1,0 +1,4 @@
+.simple-state { max-width: 620px; margin: var(--space-12) auto; text-align: center; }
+.simple-state .state-code { display: inline-flex; margin-bottom: var(--space-4); color: var(--color-primary); font-size: var(--font-size-4xl); font-weight: var(--font-weight-bold); letter-spacing: -0.04em; }
+.simple-state h1 { margin-bottom: var(--space-3); color: var(--color-text); font-size: var(--font-size-2xl); }
+.simple-state p { margin: 0 auto var(--space-6); line-height: var(--leading-relaxed); }

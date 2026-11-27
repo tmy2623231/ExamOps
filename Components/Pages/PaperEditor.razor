@@ -1,0 +1,436 @@
+@page "/content/papers/new"
+@page "/content/papers/{Id:long}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.PaperRead)]
+@using System.Globalization
+@inject PaperService Service
+@inject QuestionService QuestionService
+@inject OrganizationService Organization
+@inject DataScopeService Scope
+@inject ICurrentUser CurrentUser
+@inject NavigationManager Navigation
+@inject ILogger<PaperEditor> Logger
+
+<PageHeader Title="@(Id.HasValue ? "试卷编辑" : "新建试卷")" Description="维护试卷版本与组卷蓝图；固定题本地选择，随机题按规则生成候选题池。">
+    <Actions><a class="btn btn-secondary" href="/content/papers"><Icon Name="arrow-left" />返回组卷列表</a></Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载组卷编辑器…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body paper-load-error"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadEditorAsync"><Icon Name="refresh" />重新加载</button></section>
+}
+else if (!Id.HasValue && !_canCreate)
+{
+    <section class="card"><EmptyState Title="没有新建试卷权限" Description="当前账号没有组卷创建权限，请联系组织管理员。" IconName="paper"><Action><a class="btn btn-secondary" href="/forbidden">查看权限说明</a></Action></EmptyState></section>
+}
+else if (!Id.HasValue && _departments.Count == 0)
+{
+    <section class="card"><EmptyState Title="没有可创建的部门" Description="当前账号没有可创建试卷的启用部门，请联系组织管理员配置数据范围。" IconName="building" /><button type="button" class="btn btn-secondary" @onclick="LoadEditorAsync">重新加载</button></section>
+}
+else
+{
+    if (!string.IsNullOrWhiteSpace(_optionsError)) { <Alert Kind="warning" Message="@_optionsError" /><button type="button" class="btn btn-secondary options-retry" @onclick="LoadBanksAsync"><Icon Name="refresh" />重试题库选项</button> }
+    if (!string.IsNullOrWhiteSpace(_readOnlyReason)) { <Alert Kind="info" Message="@_readOnlyReason" /> }
+    if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }
+    if (_dirty && !_readOnly) { <Alert Kind="warning" Message="有未保存的更改。生成随机池、复制、发布或归档前，请先保存。" /> }
+
+    @if (!Id.HasValue)
+    {
+        <form class="card create-paper-form" @onsubmit="CreateAsync" @onsubmit:preventDefault>
+            <header class="card-header"><h2 class="card-title">试卷信息</h2></header>
+            <div class="card-body">
+                <div class="form-grid">
+                    <div class="field field-full"><label for="new-paper-title">试卷名称</label><input id="new-paper-title" class="input" @bind="_title" maxlength="200" autocomplete="off" required /><span class="field-hint">创建后仍可在编辑页修改。</span></div>
+                    <div class="field"><label for="new-paper-department">所属部门</label><select id="new-paper-department" class="select" @bind="_departmentId" required><option value="">请选择部门</option>@foreach (var department in _departments) { <option value="@department.Id">@department.Name</option> }</select></div>
+                    <div class="field"><label for="new-paper-duration">考试时长（分钟）</label><input id="new-paper-duration" class="input" type="number" min="1" max="600" step="1" inputmode="numeric" @bind="_durationText" required /></div>
+                </div>
+            </div>
+            <footer class="create-actions"><button type="submit" class="btn btn-primary" disabled="@_busy"><Icon Name="plus" />@(_busy ? "正在创建…" : "创建并开始组卷")</button></footer>
+        </form>
+    }
+    else if (_detail is not null)
+    {
+        <div class="paper-editor-layout">
+            <div class="paper-editor-main">
+                <form class="card paper-basic-form" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+                    <header class="card-header"><div class="editor-heading"><h2 class="card-title">基本信息</h2><span class="badge @StatusClass(_detail.Status)">@StatusLabel(_detail.Status)</span><span class="badge badge-neutral">v@(_detail.VersionNo)</span></div><span class="field-hint">@_detail.DepartmentName</span></header>
+                    <div class="card-body">
+                        <div class="form-grid">
+                            <div class="field field-full"><label for="paper-title">试卷名称</label><input id="paper-title" class="input" @bind="_title" @bind:after="MarkDirty" maxlength="200" autocomplete="off" disabled="@_readOnly" /></div>
+                            <div class="field"><label for="paper-duration">考试时长（分钟）</label><input id="paper-duration" class="input" type="number" min="1" max="600" step="1" inputmode="numeric" @bind="_durationText" @bind:after="MarkDirty" disabled="@_readOnly" /></div>
+                            <div class="field"><span class="field-label">当前查看版本</span><strong>v@(_detail.VersionNo) · @VersionLabel(_detail.VersionStatus)</strong><span class="field-hint">@(_detail.VersionStatus == "Draft" ? "草稿内容保存后才会发布。" : "历史已发布版本只读，可复制为新草稿后修改。")</span></div>
+                        </div>
+                    </div>
+                </form>
+
+                <section class="paper-sections" aria-label="试卷小节">
+                    <div class="sections-heading"><div><h2>试卷小节</h2><p>固定题保存时携带完整版本 ID；随机题保存时携带完整 pool ID。</p></div>@if (!_readOnly) { <button type="button" class="btn btn-secondary" disabled="@(_busy || _sections.Count >= 100)" @onclick="AddSection"><Icon Name="plus" />添加小节</button> }</div>
+                    @if (_sections.Count == 0)
+                    {
+                        <section class="card"><EmptyState Title="还没有小节" Description="添加固定题小节或随机抽题小节，开始组建试卷。" IconName="paper"><Action>@if (!_readOnly) { <button type="button" class="btn btn-primary" @onclick="AddSection"><Icon Name="plus" />添加小节</button> }</Action></EmptyState></section>
+                    }
+                    else
+                    {
+                        @foreach (var section in _sections.OrderBy(x => x.SortOrder))
+                        {
+                            var sectionQuestions = _questions.Where(x => x.SectionId == section.Id).ToArray();
+                            var otherPoolIds = _questions.Where(x => x.IsPool && x.SectionId != section.Id).Select(x => x.QuestionVersionId).ToHashSet();
+                            <PaperSectionEditor @key="section.Id" Section="section" Questions="sectionQuestions" Banks="_banks" PersistedPoolCount="_persistedPoolCounts.GetValueOrDefault(section.Id)" OverlapCount="sectionQuestions.Count(x => x.IsPool && otherPoolIds.Contains(x.QuestionVersionId))" Disabled="_readOnly" Busy="_busy" CanSelect="@(!_readOnly && _canSelectQuestions)" CanGenerate="CanGenerate(section)" MoveDownDisabled="@(section.SortOrder >= _sections.Count || _busy)" Changed="SectionChangedAsync" QuestionSelected="AddCandidateAsync" QuestionRemoved="RequestRemoveQuestion" MoveUp="() => MoveSectionAsync(section, -1)" MoveDown="() => MoveSectionAsync(section, 1)" Remove="() => RequestRemoveSection(section)" Generate="() => GeneratePoolAsync(section)" />
+                        }
+                    }
+                </section>
+
+                <PaperEditorActions ReadOnly="_readOnly" Busy="_busy" Dirty="_dirty" CanUpdate="_canUpdate" CanPublish="_canPublish" CanArchive="_canArchive" HasBlockingIssues="HasBlockingIssues" Status="@_detail.Status" VersionStatus="@_detail.VersionStatus" Save="SaveAsync" CopyDraft="CopyDraftAsync" Publish="RequestPublish" Archive="RequestArchive" />
+            </div>
+
+            <aside class="paper-editor-sidebar">
+                <PaperVersionTimeline PaperId="_detail.Id" SelectedVersionId="_detail.VersionId" Versions="_detail.Versions" />
+                <PaperPreviewPanel Preview="_preview" />
+            </aside>
+        </div>
+    }
+}
+
+<Modal IsOpen="_confirmOpen" Title="@_confirmTitle" OnClose="CloseConfirm">
+    <ChildContent><p>@_confirmMessage</p>@if (!string.IsNullOrWhiteSpace(_formError)) { <Alert Kind="danger" Message="@_formError" /> }</ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseConfirm">取消</button><button type="button" class="btn @(_confirmDanger ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmAsync">@(_busy ? "正在处理…" : "确认")</button></FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public long? Id { get; set; }
+    [SupplyParameterFromQuery(Name = "versionId")] public long? VersionId { get; set; }
+
+    private PaperDetail? _detail;
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private IReadOnlyList<QuestionBankRow> _banks = [];
+    private List<PaperSectionInput> _sections = [];
+    private List<PaperQuestionRow> _questions = [];
+    private Dictionary<long, int> _persistedPoolCounts = new();
+    private PaperPreview _preview = new(0, 0, 0, 0, 0, [], []);
+    private string _title = "";
+    private string _durationText = "60";
+    private long _departmentId;
+    private long? _requestedVersionId;
+    private long _nextSectionId = -1;
+    private long _nextQuestionId = -1;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _dirty;
+    private bool _readOnly = true;
+    private bool _canCreate;
+    private bool _canUpdate;
+    private bool _canPublish;
+    private bool _canArchive;
+    private bool _canSelectQuestions;
+    private bool _confirmOpen;
+    private bool _confirmDanger;
+    private string _confirmAction = "";
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private long _pendingSectionId;
+    private long _pendingQuestionId;
+    private string? _loadError;
+    private string? _formError;
+    private string? _optionsError;
+    private string? _readOnlyReason;
+    private string? _message;
+    private string _messageKind = "info";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _requestedVersionId = VersionId;
+        await LoadEditorAsync();
+    }
+
+    private async Task LoadEditorAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        _formError = null;
+        _dirty = false;
+        try
+        {
+            await CurrentUser.LoadAsync();
+            _canCreate = CurrentUser.HasPermission(Permissions.PaperCreate);
+            if (!Id.HasValue)
+            {
+                _departments = await Organization.GetDepartmentsAsync();
+                var allowed = new List<DepartmentRow>();
+                foreach (var department in _departments.Where(x => x.IsActive))
+                    if (await Scope.CanAccessDepartmentAsync(department.Id, Permissions.PaperCreate)) allowed.Add(department);
+                _departments = allowed;
+                if (_departmentId == 0 || _departments.All(x => x.Id != _departmentId)) _departmentId = _departments.FirstOrDefault()?.Id ?? 0;
+                return;
+            }
+
+            _detail = await Service.GetDetailAsync(Id.Value, _requestedVersionId);
+            if (_detail is null) { _loadError = "试卷不存在、版本不存在或已超出当前数据范围。"; return; }
+            _title = _detail.Title;
+            _durationText = _detail.DurationMinutes.ToString(CultureInfo.InvariantCulture);
+            _sections = _detail.Sections.Select(x => new PaperSectionInput(x.Id, x.Title, x.SortOrder, x.SelectionMode, x.PickCount,
+                x.ScorePerQuestion, x.BankId, x.CategoryId, x.QuestionType, x.Difficulty, _detail.Questions.Where(q => q.SectionId == x.Id).Select(q => q.QuestionVersionId).ToArray())).ToList();
+            _questions = _detail.Questions.ToList();
+            _persistedPoolCounts = _detail.Questions.Where(x => x.IsPool).GroupBy(x => x.SectionId).ToDictionary(x => x.Key, x => x.Count());
+            _nextSectionId = _sections.Select(x => x.Id).DefaultIfEmpty(-1).Min() - 1;
+            _nextQuestionId = _questions.Select(x => x.Id).DefaultIfEmpty(-1).Min() - 1;
+            _canUpdate = await Scope.CanAccessDepartmentAsync(_detail.DepartmentId, Permissions.PaperUpdate);
+            _canPublish = await Scope.CanAccessDepartmentAsync(_detail.DepartmentId, Permissions.PaperPublish);
+            _canArchive = await Scope.CanAccessDepartmentAsync(_detail.DepartmentId, Permissions.PaperArchive);
+            _readOnly = !_canUpdate || _detail.Status == "Archived" || _detail.VersionStatus != "Draft";
+            _readOnlyReason = _detail.Status == "Archived" ? "已归档试卷只读，不能保存、复制、发布或生成候选题。"
+                : _detail.VersionStatus != "Draft" ? "当前查看的是已发布版本，内容只读；可复制为新草稿后修改。"
+                : !_canUpdate ? "当前账号对试卷所属部门只读，不能修改。" : null;
+            _canSelectQuestions = !_readOnly && CurrentUser.HasPermission(Permissions.QuestionRead) && CurrentUser.HasPermission(Permissions.PaperUpdate) && _canUpdate;
+            RebuildPreview();
+            if (CurrentUser.HasPermission(Permissions.QuestionRead)) await LoadBanksAsync();
+        }
+        catch (UnauthorizedAccessException ex) { Logger.LogWarning(ex, "当前账号无权访问试卷编辑器"); _loadError = "当前账号无权访问该试卷或所选版本。"; }
+        catch (Exception ex) { Logger.LogError(ex, "加载组卷编辑器失败"); _loadError = "组卷编辑器加载失败，请稍后重试。"; }
+        finally { _loading = false; }
+    }
+
+    private async Task LoadBanksAsync()
+    {
+        _optionsError = null;
+        try
+        {
+            _banks = await QuestionService.GetBanksAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载组卷题库选项失败"); _banks = []; _optionsError = "题库选项加载失败，可查看已选内容；候选题选择与随机蓝图暂不可用。"; _canSelectQuestions = false; }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_busy || !_canCreate) return;
+        var validation = ValidateBasic();
+        if (validation is not null) { _formError = validation; return; }
+        if (_departmentId <= 0) { _formError = "请选择试卷所属部门。"; return; }
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.CreateAsync(new CreatePaperInput(_title.Trim(), _departmentId, ParseDuration()));
+            if (!result.IsSuccess) { _formError = result.Error ?? "试卷创建失败。"; return; }
+            Navigation.NavigateTo($"/content/papers/{result.Value!.PaperId}/edit", forceLoad: true);
+        }
+        catch (Exception ex) { Logger.LogError(ex, "创建试卷失败"); _formError = "试卷创建失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private void AddSection()
+    {
+        if (_readOnly || _sections.Count >= 100) return;
+        _sections.Add(new PaperSectionInput(_nextSectionId--, "", _sections.Count + 1, "Fixed", null, 1m, null, null, null, null, []));
+        MarkDirty();
+    }
+
+    private async Task SectionChangedAsync(PaperSectionInput section)
+    {
+        if (_readOnly) return;
+        var index = _sections.FindIndex(x => x.Id == section.Id);
+        if (index < 0) return;
+        _sections[index] = section;
+        foreach (var question in _questions.Where(x => x.SectionId == section.Id))
+            _questions[_questions.IndexOf(question)] = question with { Score = section.ScorePerQuestion, IsPool = section.SelectionMode == "Random" };
+        MarkDirty();
+        await Task.CompletedTask;
+    }
+
+    private Task AddCandidateAsync(PaperCandidateSelection selection)
+    {
+        if (_readOnly || !_canSelectQuestions) return Task.CompletedTask;
+        var target = _sections.FirstOrDefault(x => x.Id == selection.SectionId && x.SelectionMode == "Fixed");
+        var candidate = selection.Candidate;
+        if (target is null || _questions.Any(x => x.SectionId == target.Id && x.QuestionVersionId == candidate.QuestionVersionId)) return Task.CompletedTask;
+        _questions.Add(new PaperQuestionRow(_nextQuestionId--, target.Id, candidate.QuestionVersionId, candidate.QuestionId, candidate.BankId,
+            candidate.BankName, candidate.ExternalCode, candidate.Type, candidate.Stem, candidate.Difficulty, _questions.Count(x => x.SectionId == target.Id) + 1,
+            target.ScorePerQuestion, false));
+        var index = _sections.IndexOf(target);
+        _sections[index] = target with { QuestionVersionIds = [.. target.QuestionVersionIds, candidate.QuestionVersionId] };
+        MarkDirty();
+        return Task.CompletedTask;
+    }
+
+    private Task MoveSectionAsync(PaperSectionInput section, int offset)
+    {
+        if (_readOnly || _busy) return Task.CompletedTask;
+        var ordered = _sections.OrderBy(x => x.SortOrder).ToList();
+        var index = ordered.FindIndex(x => x.Id == section.Id);
+        var destination = index + offset;
+        if (index < 0 || destination < 0 || destination >= ordered.Count) return Task.CompletedTask;
+        (ordered[index], ordered[destination]) = (ordered[destination], ordered[index]);
+        _sections = ordered.Select((x, i) => x with { SortOrder = i + 1 }).ToList();
+        MarkDirty();
+        return Task.CompletedTask;
+    }
+
+    private void RequestRemoveSection(PaperSectionInput section)
+    {
+        _pendingSectionId = section.Id;
+        OpenConfirm("RemoveSection", "删除小节", $"确认删除“{section.Title}”及其 {_questions.Count(x => x.SectionId == section.Id)} 道本地题目？保存后生效。", true);
+    }
+
+    private void RequestRemoveQuestion(PaperQuestionRow question)
+    {
+        _pendingQuestionId = question.Id;
+        OpenConfirm("RemoveQuestion", "移除题目", "确认从当前小节移除这道题？保存后生效。", true);
+    }
+
+    private void RequestPublish() => OpenConfirm("Publish", "发布草稿", $"确认发布 v{_detail?.VersionNo}？发布后该版本只读，共 {_preview.TotalScore.ToString("0.##")} 分。", false);
+    private void RequestArchive() => OpenConfirm("Archive", "归档试卷", "确认归档这份试卷？归档后全部版本只读，且不能再复制或发布。", true);
+
+    private void OpenConfirm(string action, string title, string message, bool danger)
+    {
+        if (_dirty && action is not ("RemoveSection" or "RemoveQuestion")) { _formError = "请先保存当前更改，再执行此操作。"; return; }
+        _confirmAction = action; _confirmTitle = title; _confirmMessage = message; _confirmDanger = danger; _formError = null; _confirmOpen = true;
+    }
+
+    private void CloseConfirm() { if (!_busy) _confirmOpen = false; }
+
+    private async Task ConfirmAsync()
+    {
+        if (_busy || _detail is null) return;
+        _busy = true;
+        _formError = null;
+        try
+        {
+            if (_confirmAction == "RemoveSection")
+            {
+                _sections.RemoveAll(x => x.Id == _pendingSectionId);
+                _questions.RemoveAll(x => x.SectionId == _pendingSectionId);
+                _sections = _sections.OrderBy(x => x.SortOrder).Select((x, i) => x with { SortOrder = i + 1 }).ToList();
+                MarkDirty();
+            }
+            else if (_confirmAction == "RemoveQuestion")
+            {
+                var question = _questions.FirstOrDefault(x => x.Id == _pendingQuestionId);
+                if (question is not null)
+                {
+                    _questions.Remove(question);
+                    var section = _sections.FirstOrDefault(x => x.Id == question.SectionId);
+                    if (section is not null) _sections[_sections.IndexOf(section)] = section with { QuestionVersionIds = section.QuestionVersionIds.Where(x => x != question.QuestionVersionId).ToArray() };
+                }
+                MarkDirty();
+            }
+            else
+            {
+                Result result;
+                if (_confirmAction == "Publish") result = await Service.PublishAsync(_detail.Id, new PaperPublishInput(_detail.VersionId, _detail.VersionRowVersion), _detail.RowVersion);
+                else result = await Service.ArchiveAsync(_detail.Id, _detail.RowVersion);
+                if (!result.IsSuccess) { _formError = result.Error ?? "操作失败。"; return; }
+                _confirmOpen = false;
+                Show(_confirmAction == "Publish" ? "草稿已发布。" : "试卷已归档。", "success");
+                await LoadEditorAsync();
+                return;
+            }
+            _confirmOpen = false;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "执行试卷确认操作失败"); _formError = "操作失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private string? ValidateBasic()
+    {
+        if (string.IsNullOrWhiteSpace(_title) || _title.Trim().Length > 200) return "试卷名称需为 1–200 个字符。";
+        if (!int.TryParse(_durationText, out var duration) || duration is < 1 or > 600) return "考试时长需为 1–600 分钟。";
+        return null;
+    }
+
+    private PaperVersionInput BuildInput() => new(_title.Trim(), ParseDuration(), _sections.OrderBy(x => x.SortOrder).Select((x, i) =>
+    {
+        var ids = _questions.Where(q => q.SectionId == x.Id && q.IsPool == (x.SelectionMode == "Random")).Select(q => q.QuestionVersionId).ToArray();
+        return x with { Id = x.Id, SortOrder = i + 1, QuestionVersionIds = ids, PickCount = x.SelectionMode == "Random" ? x.PickCount : null,
+            BankId = x.SelectionMode == "Random" ? x.BankId : null, CategoryId = x.SelectionMode == "Random" ? x.CategoryId : null,
+            QuestionType = x.SelectionMode == "Random" ? x.QuestionType : null, Difficulty = x.SelectionMode == "Random" ? x.Difficulty : null };
+    }).ToArray());
+
+    private async Task SaveAsync()
+    {
+        if (_busy || _readOnly || _detail is null) return;
+        var validation = ValidateBasic();
+        if (validation is not null) { _formError = validation; return; }
+        var input = BuildInput();
+        validation = ExamOps.BLL.Validators.PaperValidator.Validate(input).Error;
+        if (validation is not null) { _formError = validation; return; }
+        if (input.Sections.Any(x => x.SelectionMode == "Random" && !x.BankId.HasValue)) { _formError = "随机小节必须选择题库。"; return; }
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.UpdateDraftAsync(_detail.Id, _detail.VersionId, _detail.RowVersion, _detail.VersionRowVersion, input);
+            if (!result.IsSuccess) { _formError = result.Error ?? "草稿保存失败。"; return; }
+            Show("草稿已保存，小节与题目成员已完整更新。", "success");
+            await LoadEditorAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "保存试卷草稿失败"); _formError = "草稿保存失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private async Task CopyDraftAsync()
+    {
+        if (_busy || _detail is null) return;
+        if (_dirty) { _formError = "请先保存当前更改，再复制草稿。"; return; }
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.CopyDraftAsync(_detail.Id, _detail.RowVersion);
+            if (!result.IsSuccess) { _formError = result.Error ?? "草稿复制失败。"; return; }
+            _requestedVersionId = result.Value!.VersionId;
+            VersionId = result.Value.VersionId;
+            Navigation.NavigateTo($"/content/papers/{_detail.Id}/edit?versionId={result.Value.VersionId}");
+            Show("已复制为新草稿，现在可以编辑。", "success");
+            await LoadEditorAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "复制试卷草稿失败"); _formError = "草稿复制失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private bool CanGenerate(PaperSectionInput section) => !_readOnly && !_dirty && _canSelectQuestions && section.SelectionMode == "Random" && section.BankId.HasValue && section.PickCount is > 0;
+
+    private async Task GeneratePoolAsync(PaperSectionInput section)
+    {
+        if (_busy || _detail is null) return;
+        if (_dirty) { _formError = "蓝图有未保存更改，请先保存后再生成候选题。"; return; }
+        if (!CanGenerate(section)) { _formError = "请先保存有效的随机蓝图（题库、抽题数）。"; return; }
+        _busy = true;
+        _formError = null;
+        try
+        {
+            var result = await Service.ApplyBlueprintAsync(_detail.Id, _detail.VersionId, section.Id, _detail.RowVersion, _detail.VersionRowVersion);
+            if (!result.IsSuccess) { _formError = result.Error ?? "候选题生成失败。"; return; }
+            Show("已按蓝图重新生成候选题 pool。", "success");
+            await LoadEditorAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "按蓝图生成试卷候选题失败"); _formError = "候选题生成失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private void RebuildPreview()
+    {
+        var rows = _sections.OrderBy(x => x.SortOrder).Select(x => new PaperSectionRow(x.Id, x.Title, x.SortOrder, x.SelectionMode, x.PickCount,
+            x.ScorePerQuestion, x.BankId, x.CategoryId, x.QuestionType, x.Difficulty, _questions.Count(q => q.SectionId == x.Id), 0)).ToArray();
+        var built = PaperPreviewBuilder.Build(rows, _questions);
+        var issues = built.Issues.ToList();
+        foreach (var section in _sections)
+        {
+            if (string.IsNullOrWhiteSpace(section.Title)) issues.Add(new PaperBlueprintIssue(section.Id, "SECTION_TITLE_REQUIRED", "小节名称不能为空。"));
+            if (section.SelectionMode == "Random" && !section.BankId.HasValue) issues.Add(new PaperBlueprintIssue(section.Id, "BANK_REQUIRED", "随机小题需要选择题库。"));
+        }
+        _preview = built with { Issues = issues.OrderBy(x => x.SectionId).ThenBy(x => x.Code).ToList() };
+    }
+
+    private void MarkDirty() { _dirty = true; _formError = null; RebuildPreview(); }
+    private int ParseDuration() => int.TryParse(_durationText, out var value) ? value : 0;
+    private bool HasBlockingIssues => _preview.Issues.Any(x => x.Code != "POOL_OVERLAP");
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string VersionLabel(string status) => status == "Draft" ? "草稿" : status == "Published" ? "已发布" : status;
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+}

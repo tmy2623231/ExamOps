@@ -1,0 +1,31 @@
+<aside class="card version-panel" aria-labelledby="paper-version-title">
+    <header class="card-header"><h2 id="paper-version-title" class="card-title">版本时间线</h2></header>
+    <div class="card-body">
+        @if (Versions.Count == 0)
+        {
+            <EmptyState Title="暂无版本" Description="试卷版本加载后可在这里切换查看。" IconName="paper" />
+        }
+        else
+        {
+            <ol class="paper-version-timeline">
+                @foreach (var version in Versions)
+                {
+                    <li class="@(version.Id == SelectedVersionId ? "is-current" : null)">
+                        <a href="/content/papers/@PaperId/edit?versionId=@version.Id"><strong>v@(version.VersionNo)</strong><span class="badge @StatusClass(version.Status)">@StatusLabel(version.Status)</span></a>
+                        <p>@(version.Id == SelectedVersionId ? "当前查看" : version.IsCurrent ? "当前版本" : "历史版本")</p>
+                        <small>@version.TotalScore.ToString("0.##") 分 · @version.DurationMinutes 分钟</small>
+                        @if (version.PublishedAt.HasValue) { <small>发布于 @TimeFormat.Display(version.PublishedAt)</small> }
+                    </li>
+                }
+            </ol>
+        }
+    </div>
+</aside>
+
+@code {
+    [Parameter] public long PaperId { get; set; }
+    [Parameter] public long SelectedVersionId { get; set; }
+    [Parameter] public IReadOnlyList<PaperVersionRow> Versions { get; set; } = [];
+    private static string StatusLabel(string status) => status switch { "Draft" => "草稿", "Published" => "已发布", "Archived" => "已归档", _ => status };
+    private static string StatusClass(string status) => status switch { "Draft" => "badge-warning", "Published" => "badge-success", "Archived" => "badge-neutral", _ => "badge-neutral" };
+}

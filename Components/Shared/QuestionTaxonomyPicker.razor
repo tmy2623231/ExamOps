@@ -1,0 +1,70 @@
+<div class="question-taxonomy">
+    <fieldset class="selection-fieldset">
+        <legend>分类</legend>
+        <p class="field-hint">分类仅属于当前题库，可选择多个。</p>
+        @if (_orderedCategories.Count == 0)
+        {
+            <p class="field-hint">当前题库还没有分类。</p>
+        }
+        else
+        {
+            <div class="taxonomy-options">
+                @foreach (var category in _orderedCategories)
+                {
+                    var selected = SelectedCategoryIds.Contains(category.Id);
+                    var depth = GetDepth(category);
+                    <label class="checkbox-row taxonomy-option @($"taxonomy-depth-{Math.Min(depth, 4)}")">
+                        <input type="checkbox" checked="@selected" disabled="@(!category.IsActive && !selected)" @onchange="e => CategoryChanged.InvokeAsync(category.Id)" />
+                        <span>@category.Name @if (!category.IsActive) { <small>@(selected ? "已停用，请移除" : "已停用")</small> }</span>
+                    </label>
+                }
+            </div>
+        }
+    </fieldset>
+    <fieldset class="selection-fieldset">
+        <legend>标签</legend>
+        <div class="taxonomy-heading"><p class="field-hint">标签在全部题库间共享。</p><button type="button" class="btn btn-ghost btn-sm" disabled="@Disabled" @onclick="NewTagRequested"><Icon Name="plus" />新建标签</button></div>
+        @if (_orderedTags.Count == 0)
+        {
+            <p class="field-hint">还没有可选标签。</p>
+        }
+        else
+        {
+            <div class="taxonomy-options">
+                @foreach (var tag in _orderedTags)
+                {
+                    var selected = SelectedTagNames.Contains(tag.Name, StringComparer.OrdinalIgnoreCase);
+                    <label class="checkbox-row"><input type="checkbox" checked="@selected" disabled="@(!tag.IsActive && !selected)" @onchange="e => TagChanged.InvokeAsync(tag.Name)" /><span>@tag.Name @if (!tag.IsActive) { <small>@(selected ? "已停用，请移除" : "已停用")</small> }</span></label>
+                }
+            </div>
+        }
+    </fieldset>
+</div>
+
+@code {
+    private IReadOnlyList<QuestionCategoryRow> _orderedCategories => Categories.OrderBy(x => GetDepth(x)).ThenBy(x => x.Name, StringComparer.Ordinal).ThenBy(x => x.Id).ToArray();
+    private IReadOnlyList<QuestionTagRow> _orderedTags => Tags.OrderBy(x => x.Name, StringComparer.Ordinal).ThenBy(x => x.Id).ToArray();
+    [Parameter] public IReadOnlyList<QuestionCategoryRow> Categories { get; set; } = [];
+    [Parameter] public IReadOnlyList<QuestionTagRow> Tags { get; set; } = [];
+    [Parameter] public HashSet<long> SelectedCategoryIds { get; set; } = [];
+    [Parameter] public HashSet<string> SelectedTagNames { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<long> CategoryChanged { get; set; }
+    [Parameter] public EventCallback<string> TagChanged { get; set; }
+    [Parameter] public EventCallback NewTagRequested { get; set; }
+
+    private int GetDepth(QuestionCategoryRow category)
+    {
+        var depth = 0;
+        var parentId = category.ParentId;
+        var visited = new HashSet<long>();
+        while (parentId.HasValue && visited.Add(parentId.Value))
+        {
+            var parent = Categories.FirstOrDefault(x => x.Id == parentId.Value);
+            if (parent is null) break;
+            depth++;
+            parentId = parent.ParentId;
+        }
+        return depth;
+    }
+}

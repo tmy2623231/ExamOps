@@ -1,0 +1,173 @@
+@inject ExamTaskService Tasks
+@inject UserService Users
+@inject ILogger<TaskStaffPanel> Logger
+@implements IAsyncDisposable
+
+<section class="card">
+    <header class="exam-section-head"><div><h2>任务工作人员</h2><p>按任务指派考务、阅卷和监考角色。</p></div>@if (CanManage) { <button type="button" class="btn btn-secondary" @onclick="OpenAdd"><Icon Name="plus" />添加</button> }</header>
+    @if (_loading)
+    {
+        <div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载工作人员…</div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="card-body"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重试</button></div>
+    }
+    else if (_staff.Count == 0)
+    {
+        <EmptyState Title="尚未指派工作人员" Description="@(CanManage ? "添加本任务的考务、阅卷或监考人员。" : "当前账号只读，不能管理工作人员。")" IconName="users" />
+    }
+    else
+    {
+        <div class="card-body exam-staff-list">
+            @foreach (var staff in _staff)
+            {
+                <div class="exam-staff-row"><div><strong>@staff.DisplayName</strong><p>@ExamLabels.StaffRole(staff.StaffRole) · @TimeFormat.Display(staff.CreatedAt)</p></div><div class="exam-actions">@if (CanManage) { <button type="button" class="btn btn-secondary" aria-label="移除 @staff.DisplayName 的 @ExamLabels.StaffRole(staff.StaffRole) 角色" @onclick="() => RequestRemove(staff)"><Icon Name="trash" />移除</button> }</div></div>
+            }
+        </div>
+    }
+</section>
+
+<Modal IsOpen="_addOpen" Title="添加任务工作人员" OnClose="CloseAdd">
+    <ChildContent>
+        <p class="exam-confirm-copy">仅可选择启用用户。添加后将立即生效，请确认角色分配正确。</p>
+        @if (!string.IsNullOrWhiteSpace(_optionsError)) { <Alert Kind="warning" Message="@_optionsError" /> }
+        <div class="field"><label for="staff-user-search">搜索用户</label><input id="staff-user-search" class="input" type="search" value="@_keyword" @oninput="SearchUsers" placeholder="姓名或账号" autocomplete="off" /></div>
+        <div class="field"><label for="staff-user">用户</label><select id="staff-user" class="select" value="@_userId" @onchange="SelectUser" required><option value="">请选择启用用户</option>@foreach (var user in _users) { <option value="@user.Id">@user.DisplayName (@user.Username)</option> }</select></div>
+        <div class="field"><label for="staff-role">考务角色</label><select id="staff-role" class="select" @bind="_role" @bind:after="ResetAddMetadata"><option value="ExamManager">考务管理员</option><option value="Grader">阅卷人</option><option value="Invigilator">监考员</option></select></div>
+        @if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseAdd">取消</button><button type="button" class="btn btn-primary" disabled="@(_busy || _userId <= 0 || !string.IsNullOrWhiteSpace(_optionsError))" @onclick="AddAsync">确认添加</button></FooterContent>
+</Modal>
+
+<Modal IsOpen="_removeOpen" Title="移除任务工作人员" OnClose="CloseRemove">
+    <ChildContent><p class="exam-confirm-copy">确认移除 @_pending?.DisplayName 的“@(_pending is null ? "" : ExamLabels.StaffRole(_pending.StaffRole))”角色？移除后该用户将失去此任务对应的工作权限。</p>@if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }</ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseRemove">取消</button><button type="button" class="btn btn-danger" disabled="@_busy" @onclick="RemoveAsync">确认移除</button></FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public long TaskId { get; set; }
+    [Parameter] public long DepartmentId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+
+    private IReadOnlyList<ExamTaskStaffRow> _staff = [];
+    private IReadOnlyList<UserRow> _users = [];
+    private CancellationTokenSource? _searchCancellation;
+    private int _usersLoadVersion;
+    private int _loadVersion;
+    private string _keyword = "";
+    private long _userId;
+    private string _role = "ExamManager";
+    private ExamTaskStaffRow? _pending;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _addOpen;
+    private bool _removeOpen;
+    private ApiAuditMetadata? _addMetadata;
+    private ApiAuditMetadata? _removeMetadata;
+    private string? _loadError;
+    private string? _optionsError;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            var staff = await Tasks.GetStaffAsync(TaskId);
+            if (version != _loadVersion) return;
+            _staff = staff;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载任务工作人员失败"); _loadError = "工作人员加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task OpenAdd()
+    {
+        if (!CanManage || _busy) return;
+        _addOpen = true; _error = null; _optionsError = null; _userId = 0; _role = "ExamManager"; _keyword = ""; _addMetadata = null;
+        await LoadUsersAsync();
+    }
+
+    private async Task SearchUsers(ChangeEventArgs args)
+    {
+        _keyword = args.Value?.ToString() ?? ""; _userId = 0;
+        _searchCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _searchCancellation = cancellation;
+        try
+        {
+            await Task.Delay(300, cancellation.Token);
+            await LoadUsersAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, cancellation)) _searchCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        var version = ++_usersLoadVersion;
+        var keyword = string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim();
+        var departmentId = DepartmentId;
+        _optionsError = null;
+        try
+        {
+            var result = await Users.GetPagedAsync(keyword, "Active", departmentId, 1, 20);
+            if (version != _usersLoadVersion) return;
+            _users = result.Items;
+        }
+        catch (Exception ex) { if (version == _usersLoadVersion) { Logger.LogError(ex, "加载任务工作人员候选用户失败"); _users = []; _optionsError = "候选用户加载失败，请检查用户查看权限后重试。"; } }
+    }
+
+    private void CloseAdd() { if (!_busy) _addOpen = false; }
+    private void SelectUser(ChangeEventArgs args) { _userId = long.TryParse(args.Value?.ToString(), out var id) && id > 0 ? id : 0; _addMetadata = null; }
+    private void ResetAddMetadata() => _addMetadata = null;
+    private void RequestRemove(ExamTaskStaffRow staff) { if (!CanManage || _busy) return; _pending = staff; _error = null; _removeMetadata = null; _removeOpen = true; }
+    private void CloseRemove() { if (!_busy) _removeOpen = false; }
+
+    private async Task AddAsync()
+    {
+        if (!CanManage || _busy || _userId <= 0) return;
+        _busy = true; _error = null;
+        try
+        {
+            _addMetadata ??= ExamAudit.Create("exam-task-staff-add", TaskId);
+            var result = await Tasks.AddStaffAsync(TaskId, new ExamTaskStaffInput(_userId, _role), _addMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "添加工作人员失败。"; return; }
+            _addOpen = false; _addMetadata = null; await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "添加任务工作人员失败"); _error = "添加失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    private async Task RemoveAsync()
+    {
+        if (!CanManage || _busy || _pending is null) return;
+        _busy = true; _error = null;
+        try
+        {
+            _removeMetadata ??= ExamAudit.Create("exam-task-staff-remove", TaskId);
+            var result = await Tasks.RemoveStaffAsync(TaskId, _pending.Id, _removeMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "移除工作人员失败。"; return; }
+            _removeOpen = false; _pending = null; _removeMetadata = null; await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "移除任务工作人员失败"); _error = "移除失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadVersion++;
+        _usersLoadVersion++;
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

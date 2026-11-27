@@ -1,0 +1,452 @@
+@page "/org/users"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.UserRead)]
+@using ExamOps.Model.Enums
+@using ExamOps.Model.Common
+@using ExamOps.Model.Dtos
+@inject UserService Service
+@inject ExamOps.Infra.Ui.ToastService Toasts
+@inject IJSRuntime JS
+@inject ILogger<Users> Logger
+
+<PageHeader Title="用户管理" Description="管理账号、主部门、岗位角色预设，并支持 Excel 批量导入员工。">
+    <Actions>
+        <AuthorizeView Policy="@Permissions.UserCreate">
+            <button type="button" class="btn btn-secondary" @onclick="OpenImport"><Icon Name="arrow-right" />批量导入员工</button>
+            <button type="button" class="btn btn-primary" @onclick="Create"><Icon Name="plus" />新建用户</button>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" /> }
+
+<section class="card filter-bar" aria-label="用户筛选">
+    <div class="filter-field filter-keyword">
+        <label for="keyword">搜索账号或姓名</label>
+        <input id="keyword" class="input" placeholder="输入关键词" @bind="_keyword" />
+    </div>
+    <div class="filter-field">
+        <label for="status-filter">账号状态</label>
+        <select id="status-filter" class="select" @bind="_status">
+            <option value="">全部状态</option><option value="Active">启用</option><option value="Disabled">停用</option>
+        </select>
+    </div>
+    <div class="filter-field">
+        <label for="department-filter">主部门</label>
+        <select id="department-filter" class="select" @bind="_departmentId">
+            <option value="">全部部门</option>
+            @foreach (var department in _departments) { <option value="@department.Id">@department.Name</option> }
+        </select>
+    </div>
+    <div class="filter-actions">
+        <button class="btn btn-secondary" @onclick="SearchAsync">查询</button>
+        <button class="btn btn-ghost" @onclick="ClearAsync">重置</button>
+    </div>
+</section>
+
+@if (_loading)
+{
+    <div class="card loading-state user-loading" role="status"><span class="spinner" aria-hidden="true"></span>正在加载用户…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card"><Alert Kind="danger" Message="@_loadError" /><button class="btn btn-secondary" @onclick="InitializeAsync">重新加载</button></section>
+}
+else if (_result is null || _result.Items.Count == 0)
+{
+    <section class="card"><EmptyState Title="没有符合条件的用户" Description="调整筛选条件，或创建新用户。" IconName="users" /></section>
+}
+else
+{
+    <section class="card" aria-label="用户列表">
+        <div class="table-wrap" role="region" aria-label="用户表格，可横向滚动" tabindex="0">
+            <table class="table">
+                <caption class="sr-only">用户账号、姓名、部门、角色、状态、最近登录与操作</caption>
+                <thead><tr><th scope="col">账号</th><th scope="col">姓名</th><th scope="col">主部门</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">最近登录</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+                <tbody>
+                @foreach (var user in _result.Items)
+                {
+                    <tr>
+                        <td><strong>@user.Username</strong>@if (user.MustChangePassword) { <span class="badge badge-warning user-badge">待改密</span> }</td>
+                        <td>@user.DisplayName</td>
+                        <td>@(user.PrimaryDepartmentName ?? "未设置")</td>
+                        <td><span class="role-text">@user.Roles</span></td>
+                        <td><span class="badge @(user.Status == "Active" ? "badge-success" : "badge-neutral")">@(user.Status == "Active" ? "启用" : "停用")</span></td>
+                        <td>@TimeFormat.Display(user.LastLoginAt)</td>
+                        <td>
+                            <AuthorizeView Policy="@Permissions.UserUpdate">
+                                <button class="btn btn-ghost btn-sm" @onclick="() => EditAsync(user)">编辑</button>
+                            </AuthorizeView>
+                            <AuthorizeView Policy="@Permissions.UserDisable">
+                                <button class="btn btn-ghost btn-sm" @onclick="() => ToggleAsync(user)" disabled="@_busy">@(user.Status == "Active" ? "停用" : "启用")</button>
+                            </AuthorizeView>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+        <Pagination TotalCount="_result.TotalCount" PageIndex="_result.PageIndex" PageSize="_result.PageSize" PageChanged="ChangePageAsync" />
+    </section>
+}
+
+<Modal IsOpen="_editorOpen" Title="@(_editingId.HasValue ? "编辑用户" : "新建用户")" Wide="true" OnClose="CloseEditor">
+    <ChildContent>
+        @if (!string.IsNullOrWhiteSpace(_editorError)) { <Alert Kind="danger" Message="@_editorError" /> }
+        <div class="form-grid">
+            <div class="field">
+                <label for="username">账号</label>
+                <input id="username" class="input" @bind="_input.Username" maxlength="64" autocomplete="off" readonly="@_editingId.HasValue" />
+            </div>
+            <div class="field">
+                <label for="display-name">姓名</label>
+                <input id="display-name" class="input" @bind="_input.DisplayName" maxlength="100" autocomplete="name" />
+            </div>
+            <div class="field">
+                <label for="email">邮箱</label>
+                <input id="email" class="input" type="email" @bind="_input.Email" maxlength="254" autocomplete="email" />
+            </div>
+            <div class="field">
+                <label for="primary-department">主部门</label>
+                <select id="primary-department" class="select" @bind="_input.PrimaryDepartmentId">
+                    <option value="0">请选择</option>
+                    @foreach (var department in _departments.Where(x => x.IsActive)) { <option value="@department.Id">@department.Name</option> }
+                </select>
+            </div>
+            <div class="field">
+                <label for="user-status">账号状态</label>
+                <select id="user-status" class="select" @bind="_input.Status"><option value="Active">启用</option><option value="Disabled">停用</option></select>
+            </div>
+            <div class="field">
+                <label for="initial-password">@(_editingId.HasValue ? "重置密码（可选）" : "初始密码")</label>
+                <input id="initial-password" class="input" type="password" @bind="_input.Password" maxlength="128" autocomplete="new-password" />
+                <span class="field-hint">12–128 个字符。重置后用户下次登录必须修改。</span>
+            </div>
+        </div>
+        <fieldset class="selection-fieldset">
+            <legend>所属部门</legend>
+            <p class="field-hint">主部门会自动加入。所属部门用于组织归属展示。</p>
+            <div class="selection-grid">
+                @foreach (var department in _departments.Where(x => x.IsActive))
+                {
+                    <label class="checkbox-row"><input type="checkbox" checked="@_departmentIds.Contains(department.Id)" @onchange="e => ToggleDepartment(department.Id, e.Value)" /><span>@department.Name</span></label>
+                }
+            </div>
+        </fieldset>
+        <AuthorizeView Policy="@Permissions.RoleAssign">
+            <fieldset class="selection-fieldset">
+                <legend>角色与数据范围</legend>
+                <div class="role-presets" role="group" aria-label="快捷岗位预设">
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyRolePreset(RoleCodes.Candidate)'>普通考生</button>
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyRolePreset(RoleCodes.ExamManager)'>部门考务</button>
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyRolePreset(RoleCodes.QuestionManager)'>命题老师</button>
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick='() => ApplyRolePreset(RoleCodes.Grader)'>阅卷复核员</button>
+                </div>
+                <p class="field-hint">点击上方快捷岗位可一键勾选对应角色与当前主部门；也可下方精细微调。</p>
+                <div class="role-assignment-list">
+                    @foreach (var choice in _roleChoices)
+                    {
+                        <div class="role-assignment">
+                            <label class="checkbox-row"><input type="checkbox" @bind="choice.Selected" /><span class="checkbox-copy"><strong>@choice.Role.Name</strong>@if (!choice.Role.IsActive) { <small>已停用</small> }<small>@choice.Role.Code</small></span></label>
+                            @if (choice.Selected)
+                            {
+                                @if (DataScopeRules.RequiresDepartmentAnchor(choice.Role.ScopeType))
+                                {
+                                    <select class="select role-scope" aria-label="@(choice.Role.Name)的数据范围" @bind="choice.DepartmentId">
+                                        <option value="">请选择部门</option>
+                                        @foreach (var department in _departments.Where(x => x.IsActive)) { <option value="@department.Id">@department.Name</option> }
+                                    </select>
+                                }
+                                else
+                                {
+                                    <span class="role-scope-note">@(choice.Role.ScopeType == "All" ? "组织全局" : choice.Role.ScopeType == "Self" ? "仅本人" : "按任务指派")</span>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            </fieldset>
+        </AuthorizeView>
+    </ChildContent>
+    <FooterContent>
+        <button class="btn btn-secondary" @onclick="CloseEditor">取消</button>
+        <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_busy">@(_busy ? "正在保存…" : "保存")</button>
+    </FooterContent>
+</Modal>
+
+<Modal IsOpen="_importOpen" Title="Excel 批量导入员工" Wide="true" OnClose="CloseImport">
+    <ChildContent>
+        <p class="field-hint">下载官方模板填写账号、姓名、部门名称与岗位角色（考生/部门考务/命题老师/阅卷复核员），密码留空将自动生成 13 位强密码。</p>
+        <div class="user-import-bar">
+            <a class="btn btn-secondary btn-sm" href="/api/user-imports/template" target="_blank">下载员工导入模板 (.xlsx)</a>
+            <label class="btn btn-primary btn-sm user-import-file">
+                <span>@(_importing ? "正在解析导入…" : "选择 .xlsx 文件并导入")</span>
+                <InputFile OnChange="OnImportFileAsync" accept=".xlsx" disabled="@_importing" />
+            </label>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_importError)) { <Alert Kind="danger" Message="@_importError" /> }
+        @if (_importResult is not null)
+        {
+            <Alert Kind="success" Message="@($"导入完成：新建 {_importResult.CreatedCount} 人，跳过重名 {_importResult.SkippedCount} 人，失败 {_importResult.Errors.Count} 行。")" />
+            @if (_importResult.CreatedCredentials.Count > 0)
+            {
+                <div class="user-import-bar">
+                    <strong>一次性初始密码清单（请妥善分发，关闭后不再明文展示）</strong>
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick="CopyImportCredentialsAsync">一键复制发号清单</button>
+                </div>
+                <div class="table-wrap" tabindex="0">
+                    <table class="table">
+                        <thead><tr><th>行号</th><th>账号</th><th>姓名</th><th>部门</th><th>岗位</th><th>初始密码</th></tr></thead>
+                        <tbody>
+                            @foreach (var c in _importResult.CreatedCredentials)
+                            {
+                                <tr><td>@c.RowNo</td><td><code>@c.Username</code></td><td>@c.DisplayName</td><td>@c.DepartmentName</td><td>@c.RoleLabel</td><td><code>@c.InitialPassword</code></td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            @if (_importResult.Errors.Count > 0)
+            {
+                <div class="table-wrap" tabindex="0">
+                    <table class="table">
+                        <thead><tr><th>行号</th><th>账号</th><th>错误原因</th></tr></thead>
+                        <tbody>
+                            @foreach (var err in _importResult.Errors)
+                            {
+                                <tr><td>@err.RowNo</td><td>@err.Username</td><td>@err.Message</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="btn btn-primary" disabled="@_importing" @onclick="CloseImport">完成</button>
+    </FooterContent>
+</Modal>
+
+@code {
+    private bool _importOpen;
+    private bool _importing;
+    private string? _importError;
+    private UserBatchImportResult? _importResult;
+
+    private void OpenImport() { _importError = null; _importResult = null; _importOpen = true; }
+    private void CloseImport() { if (!_importing) _importOpen = false; }
+
+    private void ApplyRolePreset(string roleCode)
+    {
+        foreach (var choice in _roleChoices)
+        {
+            var match = string.Equals(choice.Role.Code, roleCode, StringComparison.Ordinal);
+            choice.Selected = match;
+            if (match && DataScopeRules.RequiresDepartmentAnchor(choice.Role.ScopeType))
+                choice.DepartmentId = _input.PrimaryDepartmentId > 0 ? _input.PrimaryDepartmentId : _departments.FirstOrDefault(d => d.IsActive)?.Id;
+            else
+                choice.DepartmentId = null;
+        }
+    }
+
+    private async Task OnImportFileAsync(InputFileChangeEventArgs e)
+    {
+        if (_importing || e.File is null) return;
+        _importing = true;
+        _importError = null;
+        _importResult = null;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(5 * 1024 * 1024);
+            var (rows, parseError) = await ExamOps.Infra.Import.UserExcelImportHelper.ParseAsync(stream, e.File.Name);
+            if (parseError is not null) { _importError = parseError; return; }
+            var res = await Service.BatchImportAsync(rows);
+            if (!res.IsSuccess || res.Value is null) { _importError = res.Error ?? "批量导入失败"; return; }
+            _importResult = res.Value;
+            await Toasts.SuccessAsync("员工批量导入完成", $"成功新建 {res.Value.CreatedCount} 名员工");
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "员工批量导入失败");
+            _importError = "员工文件解析或导入失败，请确认使用官方 .xlsx 模板。";
+        }
+        finally { _importing = false; }
+    }
+
+    private async Task CopyImportCredentialsAsync()
+    {
+        if (_importResult is null || _importResult.CreatedCredentials.Count == 0) return;
+        var lines = _importResult.CreatedCredentials.Select(c => $"{c.DisplayName}\t账号:{c.Username}\t初始密码:{c.InitialPassword}\t部门:{c.DepartmentName}");
+        var text = string.Join(Environment.NewLine, lines);
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            await Toasts.SuccessAsync("发号清单已复制", $"共 {_importResult.CreatedCredentials.Count} 条账号密码");
+        }
+        catch
+        {
+            await Toasts.InfoAsync("请从表格手动复制初始密码", "浏览器未授予剪贴板权限");
+        }
+    }
+    private PagedResult<UserRow>? _result;
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private IReadOnlyList<RoleRow> _roles = [];
+    private List<RoleChoice> _roleChoices = [];
+    private HashSet<long> _departmentIds = [];
+    private string _keyword = "";
+    private string _status = "";
+    private long? _departmentId;
+    private int _pageIndex = 1;
+    private const int PageSize = 20;
+    private bool _loading = true;
+    private bool _editorOpen;
+    private bool _busy;
+    private long? _editingId;
+    private long _rowVersion;
+    private UserInput _input = new();
+    private string? _message;
+    private string? _loadError;
+    private string? _editorError;
+    private string _messageKind = "info";
+
+    protected override Task OnInitializedAsync() => InitializeAsync();
+
+    private async Task InitializeAsync()
+    {
+        try
+        {
+            _departments = await Service.GetDepartmentsAsync();
+            _roles = await Service.GetRolesAsync();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "初始化用户管理失败");
+            _loadError = "用户管理加载失败，请稍后重试。";
+            _loading = false;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try { _result = await Service.GetPagedAsync(_keyword, _status, _departmentId, _pageIndex, PageSize); }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载用户失败");
+            _loadError = "用户列表加载失败，请稍后重试。";
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task SearchAsync() { _pageIndex = 1; _message = null; await LoadAsync(); }
+    private async Task ClearAsync() { _keyword = ""; _status = ""; _departmentId = null; _pageIndex = 1; _message = null; await LoadAsync(); }
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+
+    private void Create()
+    {
+        _editingId = null;
+        _input = new UserInput { Status = "Active" };
+        _departmentIds = [];
+        _roleChoices = _roles.Select(x => new RoleChoice(x)).ToList();
+        _editorError = null;
+        _editorOpen = true;
+    }
+
+    private async Task EditAsync(UserRow row)
+    {
+        _busy = true;
+        _editorError = null;
+        try
+        {
+            var detail = await Service.GetDetailAsync(row.Id);
+            if (detail is null) { Show("用户不存在或已超出当前数据范围。", "danger"); return; }
+            _editingId = detail.Id;
+            _rowVersion = detail.RowVersion;
+            _input = new UserInput { Username = detail.Username, DisplayName = detail.DisplayName, Email = detail.Email, Status = detail.Status, PrimaryDepartmentId = detail.PrimaryDepartmentId ?? 0 };
+            _departmentIds = detail.DepartmentIds.ToHashSet();
+            _roleChoices = _roles.Select(role =>
+            {
+                var assignment = detail.Roles.FirstOrDefault(x => x.RoleId == role.Id);
+                return new RoleChoice(role) { Selected = assignment is not null, DepartmentId = assignment?.DepartmentId };
+            }).ToList();
+            _editorOpen = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "读取用户详情失败");
+            Show("用户详情加载失败，请稍后重试。", "danger");
+        }
+        finally { _busy = false; }
+    }
+
+    private void ToggleDepartment(long id, object? value)
+    {
+        var selected = value is bool flag && flag;
+        if (selected) _departmentIds.Add(id); else _departmentIds.Remove(id);
+    }
+
+    private void CloseEditor() { if (!_busy) _editorOpen = false; }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _editorError = null;
+        try
+        {
+            var assignments = _roleChoices.Where(x => x.Selected).Select(x => new RoleAssignmentDto(x.Role.Id, x.DepartmentId)).ToList();
+            var input = new UserEditInput(_input.Username, _input.DisplayName, _input.Email, _input.Status, _input.PrimaryDepartmentId, _input.Password, assignments, _departmentIds.ToList());
+            var result = _editingId.HasValue ? await Service.UpdateAsync(_editingId.Value, input, _rowVersion) : await Service.CreateAsync(input);
+            if (!result.IsSuccess) { _editorError = result.Error ?? "保存失败"; return; }
+            _editorOpen = false;
+            Show(_editingId.HasValue ? "用户已更新。" : "用户已创建。", "success");
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "保存用户失败");
+            _editorError = "用户保存失败，请稍后重试。";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ToggleAsync(UserRow user)
+    {
+        var disabling = user.Status == "Active";
+        if (disabling && !await JS.InvokeAsync<bool>("confirm", $"确认停用“{user.DisplayName}”的账号？")) return;
+        _busy = true;
+        try
+        {
+            var result = await Service.SetStatusAsync(user.Id, disabling ? "Disabled" : "Active", user.RowVersion);
+            Show(result.IsSuccess ? (disabling ? "用户已停用。" : "用户已启用。") : result.Error ?? "操作失败", result.IsSuccess ? "success" : "danger");
+            if (result.IsSuccess) await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "切换用户状态失败");
+            Show("用户状态更新失败，请稍后重试。", "danger");
+        }
+        finally { _busy = false; }
+    }
+
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+
+    public sealed class UserInput
+    {
+        public string Username { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string? Email { get; set; }
+        public string Status { get; set; } = "Active";
+        public long PrimaryDepartmentId { get; set; }
+        public string? Password { get; set; }
+    }
+
+    public sealed class RoleChoice(RoleRow role)
+    {
+        public RoleRow Role { get; } = role;
+        public bool Selected { get; set; }
+        public long? DepartmentId { get; set; }
+    }
+}

@@ -1,0 +1,98 @@
+/* Lucian UX/UI Prompt #021 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#021 */
+.u021-compact {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.u021-sw {
+  position: relative;
+  width: 62px;
+  height: 30px;
+  border: 0;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  isolation: isolate;
+  background: linear-gradient(180deg, var(--color-sky-day-top), var(--color-sky-day-bottom));
+  box-shadow: inset 0 2px 5px rgba(0, 30, 80, .24), inset 0 -1px 2px rgba(255, 255, 255, .4);
+  transition: box-shadow .8s var(--ux-ease);
+}
+.u021-sw::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, var(--color-sky-night-top), var(--color-sky-night-bottom));
+  opacity: 0;
+  transition: opacity .8s var(--ux-ease);
+}
+.u021-sw:focus-visible { outline: 2px solid var(--ux-accent); outline-offset: 3px; }
+.u021-compact.is-night .u021-sw::before { opacity: 1; }
+.u021-compact.is-night .u021-sw {
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, .5), inset 0 -1px 2px rgba(255, 255, 255, .08);
+}
+
+.u021-halo {
+  position: absolute;
+  z-index: 1;
+  left: 15px;
+  top: 15px;
+  width: 0;
+  height: 0;
+  transition: transform .9s var(--ux-spring);
+}
+.u021-halo i { position: absolute; border-radius: 50%; background: rgba(255, 255, 255, .14); }
+.u021-halo i:nth-child(1) { width: 38px; height: 38px; margin: -19px; }
+.u021-halo i:nth-child(2) { width: 52px; height: 52px; margin: -26px; }
+.u021-halo i:nth-child(3) { width: 66px; height: 66px; margin: -33px; }
+.u021-compact.is-night .u021-halo { transform: translateX(32px); }
+
+.u021-knob {
+  position: absolute;
+  z-index: 3;
+  left: 3px;
+  top: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(circle at 35% 30%, var(--color-sun-1), var(--color-sun-2) 45%, var(--color-sun-3));
+  box-shadow: 0 2px 6px -1px rgba(140, 80, 0, .45), inset -2px -2px 4px rgba(200, 110, 0, .3);
+  transition: transform .9s var(--ux-spring);
+}
+.u021-moon {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--color-moon-1), var(--color-moon-2) 60%, var(--color-moon-3));
+  opacity: 0;
+  transform: translateX(100%);
+  transition: transform .8s var(--ux-ease), opacity .4s var(--ux-ease);
+}
+.u021-moon i { position: absolute; border-radius: 50%; background: var(--color-moon-crater); box-shadow: inset 1px 1px 1px rgba(0, 0, 0, .18); }
+.u021-moon i:nth-child(1) { left: 6px; top: 5px; width: 6px; height: 6px; }
+.u021-moon i:nth-child(2) { left: 14px; top: 12px; width: 5px; height: 5px; }
+.u021-moon i:nth-child(3) { left: 7px; top: 15px; width: 3px; height: 3px; }
+.u021-compact.is-night .u021-knob { transform: translateX(32px) rotate(200deg); }
+.u021-compact.is-night .u021-moon { opacity: 1; transform: none; }
+
+.u021-clouds { position: absolute; z-index: 2; inset: 0; transition: transform .8s var(--ux-ease), opacity .6s var(--ux-ease); }
+.u021-clouds i { position: absolute; border-radius: 999px; background: var(--color-on-primary); }
+.u021-clouds i:nth-child(1) { right: -4px; bottom: -7px; width: 34px; height: 16px; box-shadow: -14px 3px 0 -2px var(--color-on-primary); }
+.u021-clouds i:nth-child(2) { right: 6px; bottom: -10px; width: 28px; height: 14px; background: var(--color-cloud-back); z-index: -1; }
+.u021-compact.is-night .u021-clouds { transform: translateY(24px); opacity: 0; }
+
+.u021-stars { position: absolute; z-index: 1; inset: 0; opacity: 0; transform: translateY(-10px); transition: transform .8s var(--ux-ease), opacity .6s var(--ux-ease); }
+.u021-stars i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: var(--color-on-primary); animation: u021-tw 2.4s ease-in-out infinite; }
+.u021-stars .s1 { left: 10px; top: 7px; }
+.u021-stars .s2 { left: 19px; top: 18px; animation-delay: -.6s; }
+.u021-stars .s3 { left: 27px; top: 8px; animation-delay: -1.2s; }
+.u021-stars .s4 { left: 14px; top: 22px; animation-delay: -1.8s; }
+.u021-compact.is-night .u021-stars { opacity: 1; transform: none; }
+@keyframes u021-tw { 50% { opacity: .3; transform: scale(.6); } }
+
+@media (max-width: 960px), (pointer: coarse) {
+  .u021-sw { min-height: 36px; height: 36px; width: 68px; }
+  .u021-knob { width: 28px; height: 28px; top: 4px; left: 4px; }
+  .u021-compact.is-night .u021-knob { transform: translateX(32px) rotate(200deg); }
+}

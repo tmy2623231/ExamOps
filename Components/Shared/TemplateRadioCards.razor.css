@@ -1,0 +1,60 @@
+/* Lucian UX/UI Prompt #015 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#015 */
+.u015-wrap { position: relative; width: 100%; }
+.u015-grp { position: relative; display: flex; flex-direction: column; gap: 10px; }
+.u015-frame {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 0;
+  border-radius: 14px;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--ux-accent), 0 14px 28px -18px color-mix(in srgb, var(--ux-accent) 65%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--ux-accent) 8%, transparent), transparent 70%);
+  transition: top .5s var(--ux-spring), height .5s var(--ux-spring);
+}
+.u015-opt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ux-surface);
+  color: var(--ux-ink);
+  text-align: left;
+  box-shadow: 0 0 0 1px var(--ux-line);
+  transition: transform .35s var(--ux-spring), box-shadow .25s var(--ux-ease);
+}
+.u015-opt:hover { box-shadow: 0 0 0 1px var(--ux-line-2); }
+.u015-opt:active { transform: scale(.985); }
+.u015-opt:focus-visible { outline: 2px solid var(--ux-accent); outline-offset: 3px; }
+.u015-dot {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--ux-line-2);
+  transition: box-shadow .3s var(--ux-ease);
+}
+.u015-dot::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--ux-accent);
+  transform: scale(0);
+  transition: transform .42s var(--ux-spring);
+}
+.u015-opt[aria-checked="true"] .u015-dot { box-shadow: inset 0 0 0 2px var(--ux-accent); }
+.u015-opt[aria-checked="true"] .u015-dot::after { transform: scale(1); }
+.u015-txt { flex: 1; min-width: 0; }
+.u015-txt b { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 14.5px; font-weight: 720; letter-spacing: -.01em; }
+.u015-txt em { font-style: normal; font-size: 11px; font-weight: 750; padding: 2px 7px; border-radius: 999px; background: var(--ux-accent-soft); color: var(--ux-accent); }
+.u015-txt small { display: block; margin-top: 3px; font-size: 12.5px; color: var(--ux-ink-3); }
+.u015-price { text-align: right; font-variant-numeric: tabular-nums; color: var(--ux-ink-3); transition: color .3s var(--ux-ease); }
+.u015-price b { display: block; font-size: 13px; font-weight: 750; white-space: nowrap; }
+.u015-opt[aria-checked="true"] .u015-price { color: var(--ux-accent); }

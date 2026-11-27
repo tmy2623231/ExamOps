@@ -1,0 +1,18 @@
+<div class="pagination">
+    <span>共 @TotalCount 条，第 @PageIndex / @TotalPages 页</span>
+    <div class="pagination-actions">
+        <button class="btn btn-secondary btn-sm" disabled="@(PageIndex <= 1)" @onclick="Previous"><Icon Name="arrow-left" />上一页</button>
+        <span class="page-number">@PageIndex / @TotalPages</span>
+        <button class="btn btn-secondary btn-sm" disabled="@(PageIndex >= TotalPages)" @onclick="Next">下一页<Icon Name="arrow-right" /></button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int TotalCount { get; set; }
+    [Parameter] public int PageIndex { get; set; } = 1;
+    [Parameter] public int PageSize { get; set; } = 20;
+    [Parameter] public EventCallback<int> PageChanged { get; set; }
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(TotalCount / (double)PageSize));
+    private Task Previous() => PageChanged.InvokeAsync(Math.Max(1, PageIndex - 1));
+    private Task Next() => PageChanged.InvokeAsync(Math.Min(TotalPages, PageIndex + 1));
+}

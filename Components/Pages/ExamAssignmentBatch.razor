@@ -1,0 +1,120 @@
+@page "/exams/batches/{Id:long}"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.ExamAssignmentRead)]
+@inject AssignmentService Service
+@inject ICurrentUser CurrentUser
+@inject ILogger<ExamAssignmentBatch> Logger
+@implements IAsyncDisposable
+
+<div class="exam-page">
+    <a class="exam-back" href="/exams/assignments?taskId=@_detail?.TaskId"><Icon Name="arrow-left" />返回分配列表</a>
+    <PageHeader Title="下发批次详情" Description="核对批次处理结果，修复失败原因后仅重试失败行。">
+        <Actions><AuthorizeView Policy="@Permissions.ExamTaskRead"><a class="btn btn-secondary" href="/exams/tasks/@_detail?.TaskId">查看考试任务</a></AuthorizeView></Actions>
+    </PageHeader>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+    @if (_loading)
+    {
+        <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载下发批次…</div>
+    }
+    else if (_detail is null)
+    {
+        <section class="card card-body exam-load-error"><Alert Kind="danger" Message="@(_loadError ?? "批次不存在或已超出当前数据范围。")" /><button type="button" class="btn btn-secondary" @onclick="LoadAsync"><Icon Name="refresh" />重新加载</button></section>
+    }
+    else
+    {
+        <section class="card">
+            <header class="exam-section-head"><div><h2>@_detail.TaskTitle</h2><p>批次 #@_detail.Id · 创建于 @TimeFormat.Display(_detail.CreatedAt)</p></div><span class="badge @ExamLabels.BadgeClass(_detail.Status)">@ExamLabels.BatchStatus(_detail.Status)</span></header>
+            <dl class="exam-facts">
+                <div><dt>总人数</dt><dd>@_detail.TotalCount</dd></div><div><dt>成功</dt><dd>@_detail.SuccessCount</dd></div><div><dt>失败</dt><dd>@_detail.FailedCount</dd></div><div><dt>跳过</dt><dd>@_detail.SkippedCount</dd></div><div><dt>开始处理</dt><dd>@TimeFormat.Display(_detail.StartedAt)</dd></div><div><dt>处理完成</dt><dd>@TimeFormat.Display(_detail.FinishedAt)</dd></div>
+            </dl>
+        </section>
+        <section class="card exam-spaced">
+            <header class="exam-section-head"><div><h2>处理明细</h2><p>成功和跳过行不会在重试时重新创建。</p></div><button type="button" class="btn btn-primary" disabled="@(!CanRetry || _busy)" @onclick="OpenRetry"><Icon Name="refresh" />重试失败行</button></header>
+            @if (!CanRetry) { <p class="exam-inline-note">仅“失败”或“部分失败”且仍有失败记录的批次可重试；服务器还会校验任务必须已发布，重试需要分配创建权限。</p> }
+            @if (_detail.Rows.Items.Count == 0)
+            {
+                <EmptyState Title="本页没有处理明细" Description="可翻页查看其他行，或重新加载批次。" IconName="paper" />
+            }
+            else
+            {
+                <div class="card-body exam-batch-list">
+                    @foreach (var row in _detail.Rows.Items)
+                    {
+                        <article class="exam-data-row"><div><strong>@(row.DisplayName ?? $"用户 #{row.UserId}")</strong><p>第 @row.RowNo 行 · @(row.AssignmentId is null ? "未创建安排" : $"安排 #{row.AssignmentId}") · @ExamLabels.BatchRowMessage(row.ErrorJson)</p></div><span class="badge @ExamLabels.BadgeClass(row.Status)">@ExamLabels.BatchStatus(row.Status)</span></article>
+                    }
+                </div>
+                <Pagination TotalCount="_detail.Rows.TotalCount" PageIndex="_detail.Rows.PageIndex" PageSize="_detail.Rows.PageSize" PageChanged="ChangePageAsync" />
+            }
+        </section>
+    }
+</div>
+
+<Modal IsOpen="_retryOpen" Title="重试失败行" OnClose="CloseRetry">
+    <ChildContent><p class="exam-confirm-copy">将重新处理当前批次的 @_detail?.FailedCount 条失败记录。成功与跳过记录保持不变，不会重复创建安排。</p><Alert Kind="warning" Message="请先排查用户停用、部门范围或任务状态等失败原因。重试会立即写入新结果。" />@if (!string.IsNullOrWhiteSpace(_error)) { <Alert Kind="danger" Message="@_error" /> }</ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="CloseRetry">取消</button><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="RetryAsync">确认重试</button></FooterContent>
+</Modal>
+
+@code {
+    [Parameter] public long Id { get; set; }
+    private AssignmentBatchDetail? _detail;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _canCreate;
+    private bool _retryOpen;
+    private int _pageIndex = 1;
+    private int _loadVersion;
+    private const int PageSize = 20;
+    private string? _loadError;
+    private string? _error;
+    private string? _message;
+    private string _messageKind = "info";
+    private ApiAuditMetadata? _retryMetadata;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CurrentUser.LoadAsync();
+        _canCreate = CurrentUser.HasPermission(Permissions.ExamAssignmentCreate);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loading = true; _loadError = null;
+        try
+        {
+            var detail = await Service.GetBatchDetailAsync(Id, _pageIndex, PageSize);
+            if (version != _loadVersion) return;
+            _detail = detail;
+        }
+        catch (Exception ex) { if (version == _loadVersion) { Logger.LogError(ex, "加载考试下发批次失败"); _loadError = "下发批次加载失败，请稍后重试。"; } }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private bool CanRetry => _canCreate && _detail is not null && _detail.Status is "Failed" or "PartiallyFailed" && _detail.FailedCount > 0;
+    private Task ChangePageAsync(int page) { _pageIndex = page; return LoadAsync(); }
+    private void OpenRetry() { if (!CanRetry || _busy) return; _retryOpen = true; _error = null; _retryMetadata = null; }
+    private void CloseRetry() { if (!_busy) _retryOpen = false; }
+
+    private async Task RetryAsync()
+    {
+        if (_busy || _detail is null || !CanRetry) return;
+        _busy = true; _error = null;
+        try
+        {
+            _retryMetadata ??= ExamAudit.Create("exam-assignment-retry", Id);
+            var result = await Service.RetryBatchAsync(Id, _detail.RowVersion, _retryMetadata);
+            if (!result.IsSuccess) { _error = result.Error ?? "批次重试失败。"; return; }
+            _retryOpen = false; _pageIndex = 1; _message = "失败行已重新处理，批次结果已刷新。"; _messageKind = "success"; _retryMetadata = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "重试考试下发批次失败"); _error = "批次重试失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadVersion++;
+        return ValueTask.CompletedTask;
+    }
+}

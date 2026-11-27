@@ -1,0 +1,390 @@
+@page "/content/banks"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = Permissions.QuestionRead)]
+@using ExamOps.Model.Common
+@using ExamOps.Model.Dtos
+@inject QuestionService Service
+@inject OrganizationService Organization
+@inject DataScopeService Scope
+@inject ICurrentUser CurrentUser
+@inject ILogger<QuestionBanks> Logger
+<PageHeader Title="题库管理" Description="维护题库、部门共享范围、分类树与全局标签。">
+    <Actions>
+        <AuthorizeView Policy="@Permissions.QuestionCreate">
+            <button type="button" class="btn btn-primary" @onclick="CreateBank"><Icon Name="plus" />新建题库</button>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+@if (!string.IsNullOrWhiteSpace(_message)) { <Alert Kind="@_messageKind" Message="@_message" Dismissible="true" /> }
+@if (_loading)
+{
+    <div class="card loading-state" role="status"><span class="spinner" aria-hidden="true"></span>正在加载题库…</div>
+}
+else if (_loadError is not null)
+{
+    <section class="card card-body"><Alert Kind="danger" Message="@_loadError" /><button type="button" class="btn btn-secondary" @onclick="InitializeAsync">重新加载</button></section>
+}
+else if (_banks.Count == 0)
+{
+    <section class="card"><EmptyState Title="还没有题库" Description="创建题库后，可在其中建立分类并录入题目。" IconName="grid" /></section>
+}
+else
+{
+    <section class="card bank-list" aria-label="题库列表">
+        <div class="table-wrap" role="region" aria-label="题库表格，可横向滚动" tabindex="0">
+            <table class="table">
+                <caption class="sr-only">题库名称、部门、共享范围、题目数量、状态与操作</caption>
+                <thead><tr><th scope="col">题库</th><th scope="col">所属部门</th><th scope="col">共享范围</th><th scope="col">题目数</th><th scope="col">状态</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+                <tbody>
+                @foreach (var bank in _banks)
+                {
+                    <tr class="@(bank.Id == _selectedBankId ? "is-selected" : null)">
+                        <td><button type="button" class="bank-name-button" @onclick="() => SelectBankAsync(bank.Id)"><strong>@bank.Name</strong></button></td>
+                        <td>@bank.DepartmentName</td>
+                        <td>@(bank.IsShared ? "子部门可只读使用" : "仅所属部门")</td>
+                        <td>@bank.QuestionCount</td>
+                        <td><span class="badge @(bank.Status == "Active" ? "badge-success" : "badge-neutral")">@(bank.Status == "Active" ? "启用" : "已归档")</span></td>
+                        <td>
+                            <div class="table-actions">
+                                <a class="btn btn-secondary btn-sm" href="/content/questions?bankId=@bank.Id">进入题目</a>
+                                @if (bank.Status == "Active" && _importableBankIds.Contains(bank.Id))
+                                {
+                                    <a class="btn btn-secondary btn-sm" href="/content/questions/import?bankId=@bank.Id">批量导入</a>
+                                }
+                                @if (CanManageBank(bank))
+                                {
+                                    @if (bank.Status == "Active")
+                                    {
+                                        <button type="button" class="btn btn-ghost btn-sm" @onclick="() => EditBank(bank)">编辑</button>
+                                        <button type="button" class="btn btn-ghost btn-sm" disabled="@_busy" @onclick="() => RequestArchiveBank(bank)">归档</button>
+                                    }
+                                    else
+                                    {
+                                        <button type="button" class="btn btn-ghost btn-sm" disabled="@_busy" @onclick="() => ToggleBankAsync(bank)">启用</button>
+                                    }
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </section>
+    <div class="bank-workspace">
+        <section class="card bank-detail" aria-labelledby="category-title">
+            <header class="card-header">
+                <div><h2 id="category-title" class="card-title">分类树</h2><p class="field-hint">@(_selectedBank?.Name ?? "请选择题库")</p></div>
+                @if (_canManageSelected)
+                {
+                    <button type="button" class="btn btn-secondary btn-sm" @onclick="() => CreateCategory(null)"><Icon Name="plus" />新建分类</button>
+                }
+            </header>
+            <div class="card-body">
+                @if (_selectedBank is null)
+                {
+                    <EmptyState Title="请选择题库" Description="选择左侧题库以维护分类。" IconName="grid" />
+                }
+                else if (_selectedBank.IsShared && !_canManageSelected)
+                {
+                    <Alert Kind="info" Message="这是共享给子部门的只读题库，不能修改题库、分类或标签。" />
+                }
+                else if (_categoryError is not null)
+                {
+                    <Alert Kind="danger" Message="@_categoryError" /><button type="button" class="btn btn-secondary" @onclick="LoadCategoriesAsync">重试分类加载</button>
+                }
+                else if (_categoriesLoading)
+                {
+                    <div class="loading-state compact" role="status"><span class="spinner" aria-hidden="true"></span>正在加载分类…</div>
+                }
+                else if (_categories.Count == 0)
+                {
+                    <EmptyState Title="还没有分类" Description="可建立根分类，也可在任意分类下添加子分类。" IconName="grid" />
+                }
+                else
+                {
+                    <QuestionCategoryTree Categories="_categories" SelectedId="_selectedCategoryId" CanManage="_canManageSelected" Disabled="_busy" SelectedChanged="SelectCategory" AddChildChanged="CreateCategory" ToggleChanged="RequestToggleCategory" />
+                }
+            </div>
+        </section>
+        <QuestionTagPanel />
+    </div>
+}
+<Modal IsOpen="_bankEditorOpen" Title="@(_editingBank is null ? "新建题库" : "编辑题库")" OnClose="CloseBankEditor">
+    <ChildContent>
+        @if (!string.IsNullOrWhiteSpace(_editorError)) { <Alert Kind="danger" Message="@_editorError" /> }
+        <div class="field"><label for="bank-name">题库名称</label><input id="bank-name" class="input" @bind="_bankName" maxlength="200" autocomplete="off" /></div>
+        <div class="field"><label for="bank-department">所属部门</label><select id="bank-department" class="select" @bind="_bankDepartmentId" disabled="@(_editingBank is not null)"><option value="0">请选择部门</option>@foreach (var department in _departments.Where(x => _createDepartmentIds.Contains(x.Id))) { <option value="@department.Id">@department.Name</option> }</select></div>
+        <label class="checkbox-row"><input type="checkbox" @bind="_bankIsShared" /><span>共享给所属部门的子部门（只读）</span></label>
+        @if (!string.IsNullOrWhiteSpace(_departmentError)) { <Alert Kind="warning" Message="@_departmentError" /> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" @onclick="CloseBankEditor">取消</button><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="SaveBankAsync">@(_busy ? "正在保存…" : "保存")</button></FooterContent>
+</Modal>
+<Modal IsOpen="_categoryEditorOpen" Title="新建分类" OnClose="CloseCategoryEditor">
+    <ChildContent>
+        @if (!string.IsNullOrWhiteSpace(_editorError)) { <Alert Kind="danger" Message="@_editorError" /> }
+        <div class="field"><label for="category-name">分类名称</label><input id="category-name" class="input" @bind="_categoryName" maxlength="128" autocomplete="off" /></div>
+        @if (_categoryParent is not null) { <p class="field-hint">上级分类：@_categoryParent.Name</p> }
+    </ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" @onclick="CloseCategoryEditor">取消</button><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="SaveCategoryAsync">@(_busy ? "正在保存…" : "保存")</button></FooterContent>
+</Modal>
+<Modal IsOpen="_confirmOpen" Title="@_confirmTitle" OnClose="CloseConfirm">
+    <ChildContent><p>@_confirmMessage</p>@if (!string.IsNullOrWhiteSpace(_editorError)) { <Alert Kind="danger" Message="@_editorError" /> }</ChildContent>
+    <FooterContent><button type="button" class="btn btn-secondary" @onclick="CloseConfirm">取消</button><button type="button" class="btn @(_confirmDanger ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmAsync">@(_busy ? "正在处理…" : "确认")</button></FooterContent>
+</Modal>
+@code {
+    private IReadOnlyList<QuestionBankRow> _banks = [];
+    private IReadOnlyList<DepartmentRow> _departments = [];
+    private IReadOnlyList<QuestionCategoryRow> _categories = [];
+    private HashSet<long> _writableBankIds = [];
+    private HashSet<long> _importableBankIds = [];
+    private HashSet<long> _createDepartmentIds = [];
+    private long? _selectedBankId;
+    private long? _selectedCategoryId;
+    private long? _preferredBankId;
+    private bool _loading = true;
+    private bool _categoriesLoading;
+    private bool _busy;
+    private bool _bankEditorOpen;
+    private bool _categoryEditorOpen;
+    private bool _confirmOpen;
+    private bool _confirmDanger;
+    private string? _loadError;
+    private string? _categoryError;
+    private string? _departmentError;
+    private string? _editorError;
+    private string? _message;
+    private string _messageKind = "info";
+    private string _bankName = "";
+    private long _bankDepartmentId;
+    private bool _bankIsShared;
+    private string _categoryName = "";
+    private QuestionBankRow? _editingBank;
+    private QuestionCategoryRow? _categoryParent;
+    private QuestionBankRow? _pendingBank;
+    private QuestionCategoryRow? _pendingCategory;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private QuestionBankRow? _selectedBank => _banks.FirstOrDefault(x => x.Id == _selectedBankId);
+    private bool _canManageSelected => _selectedBank is { Status: "Active" } bank && CanManageBank(bank);
+    protected override Task OnInitializedAsync() => InitializeAsync();
+    private async Task InitializeAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        try
+        {
+            await CurrentUser.LoadAsync();
+            _banks = await Service.GetBanksAsync();
+            _writableBankIds = await GetWritableBankIdsAsync(Permissions.QuestionUpdate);
+            _importableBankIds = await GetWritableBankIdsAsync(Permissions.QuestionImport);
+            _selectedBankId = _preferredBankId ?? _banks.FirstOrDefault(x => _writableBankIds.Contains(x.Id))?.Id ?? _banks.FirstOrDefault()?.Id;
+            _preferredBankId = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载题库失败");
+            _loadError = "题库列表加载失败，请稍后重试。";
+        }
+        finally { _loading = false; }
+        await LoadCategoriesAsync();
+        await LoadDepartmentsAsync();
+    }
+    private async Task<HashSet<long>> GetWritableBankIdsAsync(string permission)
+    {
+        var ids = new HashSet<long>();
+        foreach (var bank in _banks.Where(x => x.Status == "Active"))
+        {
+            if (await Scope.CanAccessDepartmentAsync(bank.DepartmentId, permission)) ids.Add(bank.Id);
+        }
+        return ids;
+    }
+    private async Task LoadCategoriesAsync()
+    {
+        _categoryError = null;
+        if (_selectedBankId is not { } bankId) { _categories = []; return; }
+        _categoriesLoading = true;
+        try { _categories = await Service.GetCategoriesAsync(bankId); }
+        catch (Exception ex) { Logger.LogError(ex, "加载题库分类失败"); _categoryError = "分类加载失败，请稍后重试。"; }
+        finally { _categoriesLoading = false; }
+    }
+    private async Task LoadDepartmentsAsync()
+    {
+        _departmentError = null;
+        try
+        {
+            _departments = await Organization.GetDepartmentsAsync();
+            var accessible = await Scope.GetAccessibleDepartmentIdsAsync(Permissions.QuestionCreate);
+            _createDepartmentIds = accessible is null ? _departments.Select(x => x.Id).ToHashSet() : accessible.ToHashSet();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "加载题库部门选项失败"); _departmentError = "部门选项加载失败，请重新打开后再试。"; }
+    }
+    private async Task SelectBankAsync(long id)
+    {
+        if (_selectedBankId == id) return;
+        _selectedBankId = id;
+        _selectedCategoryId = null;
+        _categoryError = null;
+        await LoadCategoriesAsync();
+    }
+    private void SelectCategory(QuestionCategoryRow category) => _selectedCategoryId = category.Id;
+    private bool CanManageBank(QuestionBankRow bank) => _writableBankIds.Contains(bank.Id);
+    private void CreateBank()
+    {
+        _editingBank = null;
+        _bankName = "";
+        _bankDepartmentId = 0;
+        _bankIsShared = false;
+        _editorError = _departments.Count == 0 ? _departmentError : null;
+        _bankEditorOpen = true;
+    }
+    private void EditBank(QuestionBankRow bank)
+    {
+        _editingBank = bank;
+        _bankName = bank.Name;
+        _bankDepartmentId = bank.DepartmentId;
+        _bankIsShared = bank.IsShared;
+        _editorError = null;
+        _bankEditorOpen = true;
+    }
+    private void CloseBankEditor() { if (!_busy) _bankEditorOpen = false; }
+    private async Task SaveBankAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _editorError = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_bankName)) { _editorError = "请输入题库名称。"; return; }
+            if (_bankDepartmentId <= 0) { _editorError = "请选择所属部门。"; return; }
+            if (_editingBank is null)
+            {
+                var result = await Service.CreateBankAsync(_bankName, _bankDepartmentId, _bankIsShared);
+                if (!result.IsSuccess) { _editorError = result.Error ?? "题库创建失败。"; return; }
+                _preferredBankId = result.Value;
+                Show("题库已创建。", "success");
+            }
+            else
+            {
+                var result = await Service.UpdateBankAsync(_editingBank.Id, _bankName, _bankIsShared, _editingBank.RowVersion);
+                if (!result.IsSuccess) { _editorError = result.Error ?? "题库保存失败。"; return; }
+                _preferredBankId = _editingBank.Id;
+                Show("题库已更新。", "success");
+            }
+            _bankEditorOpen = false;
+            await InitializeAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "保存题库失败"); _editorError = "题库保存失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private void RequestArchiveBank(QuestionBankRow bank)
+    {
+        _pendingBank = bank;
+        _confirmTitle = "归档题库";
+        _confirmMessage = $"确认归档“{bank.Name}”？归档后不能新建分类、题目或导入数据。";
+        _confirmDanger = true;
+        _editorError = null;
+        _confirmOpen = true;
+    }
+    private async Task ToggleBankAsync(QuestionBankRow bank)
+    {
+        if (_busy) return;
+        _busy = true;
+        _message = null;
+        try
+        {
+            var result = await Service.SetBankActiveAsync(bank.Id, bank.RowVersion);
+            Show(result.IsSuccess ? "题库已启用。" : result.Error ?? "题库启用失败。", result.IsSuccess ? "success" : "danger");
+            if (result.IsSuccess) { _preferredBankId = bank.Id; await InitializeAsync(); }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "启用题库失败"); Show("题库启用失败，请稍后重试。", "danger"); }
+        finally { _busy = false; }
+    }
+    private void CreateCategory(QuestionCategoryRow? parent)
+    {
+        if (!_canManageSelected) return;
+        _categoryParent = parent;
+        _categoryName = "";
+        _editorError = null;
+        _categoryEditorOpen = true;
+    }
+    private void CloseCategoryEditor() { if (!_busy) _categoryEditorOpen = false; }
+    private async Task SaveCategoryAsync()
+    {
+        if (_busy || _selectedBankId is not { } bankId) return;
+        _busy = true;
+        _editorError = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_categoryName)) { _editorError = "请输入分类名称。"; return; }
+            var result = await Service.CreateCategoryAsync(bankId, _categoryName, _categoryParent?.Id);
+            if (!result.IsSuccess) { _editorError = result.Error ?? "分类创建失败。"; return; }
+            _categoryEditorOpen = false;
+            _selectedCategoryId = result.Value;
+            Show("分类已创建。", "success");
+            await LoadCategoriesAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "创建分类失败"); _editorError = "分类创建失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private async Task RequestToggleCategory(QuestionCategoryRow category)
+    {
+        if (category.IsActive)
+        {
+            _pendingCategory = category;
+            _confirmTitle = "停用分类";
+            _confirmMessage = $"确认停用“{category.Name}”？请先停用它的全部子分类。";
+            _confirmDanger = true;
+            _editorError = null;
+            _confirmOpen = true;
+        }
+        else
+        {
+            await ToggleCategoryAsync(category);
+        }
+    }
+    private async Task ToggleCategoryAsync(QuestionCategoryRow category)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            var result = await Service.SetCategoryActiveAsync(category.Id, !category.IsActive, category.RowVersion);
+            Show(result.IsSuccess ? "分类状态已更新。" : result.Error ?? "分类状态更新失败。", result.IsSuccess ? "success" : "danger");
+            if (result.IsSuccess) await LoadCategoriesAsync();
+        }
+        catch (Exception ex) { Logger.LogError(ex, "切换分类状态失败"); Show("分类状态更新失败，请稍后重试。", "danger"); }
+        finally { _busy = false; }
+    }
+    private void CloseConfirm() { if (!_busy) { _confirmOpen = false; _pendingBank = null; _pendingCategory = null; } }
+    private async Task ConfirmAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _editorError = null;
+        try
+        {
+            if (_pendingBank is { } bank)
+            {
+                var result = await Service.ArchiveBankAsync(bank.Id, bank.RowVersion);
+                if (!result.IsSuccess) { _editorError = result.Error ?? "题库归档失败。"; return; }
+                _confirmOpen = false;
+                _pendingBank = null;
+                Show("题库已归档。", "success");
+                await InitializeAsync();
+            }
+            else if (_pendingCategory is { } category)
+            {
+                var result = await Service.SetCategoryActiveAsync(category.Id, false, category.RowVersion);
+                if (!result.IsSuccess) { _editorError = result.Error ?? "分类停用失败。"; return; }
+                _confirmOpen = false;
+                _pendingCategory = null;
+                Show("分类已停用。", "success");
+                await LoadCategoriesAsync();
+            }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "确认题库或分类操作失败"); _editorError = "操作失败，请稍后重试。"; }
+        finally { _busy = false; }
+    }
+    private void Show(string message, string kind) { _message = message; _messageKind = kind; }
+}

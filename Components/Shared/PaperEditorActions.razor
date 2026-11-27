@@ -1,0 +1,35 @@
+<section class="card editor-actions paper-actions" aria-label="试卷操作">
+    @if (!ReadOnly)
+    {
+        <AuthorizeView Policy="@Permissions.PaperUpdate"><button type="button" class="btn btn-primary" disabled="@Busy" @onclick="Save"><Icon Name="check" />@(Busy ? "正在保存…" : "保存草稿")</button></AuthorizeView>
+    }
+    @if (Status != "Archived")
+    {
+        <AuthorizeView Policy="@Permissions.PaperUpdate"><button type="button" class="btn btn-secondary" disabled="@(!CanUpdate || Busy || Dirty)" @onclick="CopyDraft"><Icon Name="copy" />复制为新草稿</button></AuthorizeView>
+    }
+    @if (VersionStatus == "Draft" && Status != "Archived")
+    {
+        <AuthorizeView Policy="@Permissions.PaperPublish"><button type="button" class="btn btn-secondary" disabled="@(!CanPublish || Busy || Dirty || HasBlockingIssues)" @onclick="Publish"><Icon Name="check" />发布草稿</button></AuthorizeView>
+    }
+    @if (Status != "Archived")
+    {
+        <AuthorizeView Policy="@Permissions.PaperArchive"><button type="button" class="btn btn-danger" disabled="@(!CanArchive || Busy || Dirty)" @onclick="Archive"><Icon Name="archive" />归档试卷</button></AuthorizeView>
+    }
+    <span class="field-hint">发布与归档只作用于已保存内容；复制以当前发布版本为源。</span>
+</section>
+
+@code {
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool Dirty { get; set; }
+    [Parameter] public bool CanUpdate { get; set; }
+    [Parameter] public bool CanPublish { get; set; }
+    [Parameter] public bool CanArchive { get; set; }
+    [Parameter] public bool HasBlockingIssues { get; set; }
+    [Parameter] public string Status { get; set; } = "";
+    [Parameter] public string VersionStatus { get; set; } = "";
+    [Parameter] public EventCallback Save { get; set; }
+    [Parameter] public EventCallback CopyDraft { get; set; }
+    [Parameter] public EventCallback Publish { get; set; }
+    [Parameter] public EventCallback Archive { get; set; }
+}
