@@ -1,4 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using ExamOps.DAL;
+using ExamOps.DAL.Repositories;
 using ExamOps.Model.Common;
 using ExamOps.Model.Dtos;
 using Microsoft.EntityFrameworkCore;
@@ -11,6 +15,8 @@ public sealed class QuickPublishService(
     ExamTaskService tasks,
     AssignmentService assignments,
     QuestionService questions,
+    AuditRepository audit,
+    ExamIdempotencyService idempotency,
     DataScopeService scope,
     ICurrentUser currentUser,
     IClock clock)
@@ -141,12 +147,20 @@ public sealed class QuickPublishService(
             return Result<QuickPublishResult>.Fail($"及格分需在 0–{totalScore:0.##} 之间", "INVALID_PASS_SCORE");
 
         Result<QuickPublishResult>? outcome = null;
+        var api = BuildIdempotencyMetadata(req, title);
 
-        // 单一外层事务编排：建卷 → 配置小节/随机池 → 发布试卷 → 建任务 → 发布任务 → (可选)下发考生；任一步失败全量回滚。
+        // 单一外层事务编排：幂等锁 + 建卷 → 配置小节/随机池 → 发布试卷 → 建任务 → 发布任务 → (可选)下发考生；任一步失败全量回滚。
         try
         {
-        await uow.ExecuteInTransactionAsync(async _ =>
+        await uow.ExecuteInTransactionAsync(async db =>
         {
+            var replay = await idempotency.FindReplayAsync<QuickPublishResult>(db, api);
+            if (replay is not null)
+            {
+                outcome = Result<QuickPublishResult>.Ok(replay);
+                return;
+            }
+
             var createdPaper = await papers.CreateAsync(new CreatePaperInput($"{title} · 试卷", req.DepartmentId, req.DurationMinutes));
             if (!createdPaper.IsSuccess || createdPaper.Value is null)
             {
@@ -274,9 +288,18 @@ public sealed class QuickPublishService(
                 }
             }
 
-            outcome = Result<QuickPublishResult>.Ok(new QuickPublishResult(
-                paperDetail.Id, paperDetail.VersionId, createTask.Value.TaskId, taskCode, batchId, totalQuestions, totalScore));
+            var publishedResult = new QuickPublishResult(
+                paperDetail.Id, paperDetail.VersionId, createTask.Value.TaskId, taskCode, batchId, totalQuestions, totalScore);
+            await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, publishedResult),
+                "exam.quick_publish", "ExamTask", createTask.Value.TaskId,
+                after: new { publishedResult.PaperId, publishedResult.PaperVersionId, publishedResult.TaskId, publishedResult.TaskCode, publishedResult.BatchId });
+            await db.SaveChangesAsync();
+            outcome = Result<QuickPublishResult>.Ok(publishedResult);
         });
+        }
+        catch (ExamIdempotencyConflictException)
+        {
+            return Result<QuickPublishResult>.Fail("同一幂等键不能用于不同发考参数，请刷新页面后重试", "IDEMPOTENCY_CONFLICT");
         }
         catch (QuickPublishRollbackException)
         {
@@ -284,6 +307,22 @@ public sealed class QuickPublishService(
         }
 
         return outcome ?? Result<QuickPublishResult>.Fail("一键发布未能完成", "UNKNOWN_ERROR");
+    }
+
+    private static ApiAuditMetadata? BuildIdempotencyMetadata(QuickPublishRequest req, string normalizedTitle)
+    {
+        if (string.IsNullOrWhiteSpace(req.IdempotencyKey)) return null;
+        var canonical = JsonSerializer.Serialize(new
+        {
+            req.DepartmentId, req.BankId, Title = normalizedTitle, req.SelectionMode,
+            req.IncludeSingle, req.SingleCount, req.SingleScore,
+            req.IncludeMultiple, req.MultipleCount, req.MultipleScore,
+            req.IncludeTrueFalse, req.TrueFalseCount, req.TrueFalseScore,
+            req.AvailableFrom, req.AvailableTo, req.DurationMinutes, req.AttemptLimit,
+            req.PassScore, req.ResultReleasePolicy, req.AssignWholeDepartment, req.IncludeDescendants
+        });
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+        return new ApiAuditMetadata(req.IdempotencyKey.Trim(), hash, "POST", "/exams/quick-publish");
     }
 
     private sealed class QuickPublishRollbackException : Exception;

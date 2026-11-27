@@ -65,11 +65,19 @@ public sealed class DailyFileLoggerProvider : ILoggerProvider
         {
             lock (_gate)
             {
-                Directory.CreateDirectory(directory);
-                var bytes = Encoding.UTF8.GetByteCount(line + Environment.NewLine);
-                EnsureOpen(bytes, maxBytes);
-                _writer!.WriteLine(line);
-                _writer.Flush();
+                try
+                {
+                    Directory.CreateDirectory(directory);
+                    var bytes = Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+                    EnsureOpen(bytes, maxBytes);
+                    _writer!.WriteLine(line);
+                    _writer.Flush();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // 日志写盘故障（如磁盘满/权限异常）绝不能向业务调用方传播，避免已提交事务被误判失败。
+                    Close();
+                }
             }
         }
 

@@ -4,7 +4,8 @@ namespace ExamOps.BLL;
 
 public sealed class LoginThrottleService(IClock clock)
 {
-    private const int MaxAttempts = 5;
+    private const int MaxAttemptsPerIp = 5;
+    private const int MaxAttemptsPerAccount = 10;
     private static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
     private readonly object _gate = new();
     private readonly Dictionary<string, Queue<DateTime>> _attempts = new(StringComparer.OrdinalIgnoreCase);
@@ -14,7 +15,8 @@ public sealed class LoginThrottleService(IClock clock)
         lock (_gate)
         {
             Cleanup();
-            return GetQueue(username, ip).Count >= MaxAttempts;
+            return GetQueue(IpKey(username, ip)).Count >= MaxAttemptsPerIp
+                || GetQueue(AccountKey(username)).Count >= MaxAttemptsPerAccount;
         }
     }
 
@@ -23,18 +25,23 @@ public sealed class LoginThrottleService(IClock clock)
         lock (_gate)
         {
             Cleanup();
-            GetQueue(username, ip).Enqueue(clock.UtcNow);
+            var now = clock.UtcNow;
+            GetQueue(IpKey(username, ip)).Enqueue(now);
+            GetQueue(AccountKey(username)).Enqueue(now);
         }
     }
 
     public void Reset(string username, string ip)
     {
-        lock (_gate) { _attempts.Remove(Key(username, ip)); }
+        lock (_gate)
+        {
+            _attempts.Remove(IpKey(username, ip));
+            _attempts.Remove(AccountKey(username));
+        }
     }
 
-    private Queue<DateTime> GetQueue(string username, string ip)
+    private Queue<DateTime> GetQueue(string key)
     {
-        var key = Key(username, ip);
         if (!_attempts.TryGetValue(key, out var queue))
         {
             queue = new Queue<DateTime>();
@@ -54,5 +61,6 @@ public sealed class LoginThrottleService(IClock clock)
         }
     }
 
-    private static string Key(string username, string ip) => $"{username.Trim().ToLowerInvariant()}|{ip}";
+    private static string IpKey(string username, string ip) => $"ip|{username.Trim().ToLowerInvariant()}|{ip}";
+    private static string AccountKey(string username) => $"acct|{username.Trim().ToLowerInvariant()}";
 }

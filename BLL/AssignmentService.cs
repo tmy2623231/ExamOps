@@ -184,12 +184,15 @@ public sealed class AssignmentService(
         if (input.InProgressPolicy is not (RevocationScope.KeepScore or RevocationScope.VoidScore or RevocationScope.ForceSubmit or RevocationScope.VoidAttempt))
             return Result.Fail("答卷处理策略无效", "VALIDATION_ERROR");
         if (!await CanAccessAssignmentAsync(assignmentId, Permissions.ExamAssignmentRevoke)) return Result.Fail("安排不存在", "NOT_FOUND");
+        var taskId = await uow.Db.ExamAssignments.AsNoTracking().Where(x => x.Id == assignmentId).Select(x => (long?)x.TaskId).SingleOrDefaultAsync();
+        if (!taskId.HasValue) return Result.Fail("安排不存在", "NOT_FOUND");
         Result? outcome = null;
         try
         {
             await uow.ExecuteInTransactionAsync(async db =>
             {
                 if (await idempotency.FindReplayAsync<ExamTaskMutationResult>(db, api) is not null) { outcome = Result.Ok(); return; }
+                await ExamLockService.LockTaskAsync(db, taskId.Value);
                 await ExamLockService.LockAssignmentAsync(db, assignmentId);
                 var assignment = await assignments.GetTrackedAsync(db, assignmentId);
                 if (assignment is null) { outcome = Result.Fail("安排不存在", "NOT_FOUND"); return; }
@@ -324,12 +327,20 @@ public sealed class AssignmentService(
         var inProgress = await db.ExamAttempts.FirstOrDefaultAsync(x => x.AssignmentId == assignment.Id && x.Status == AttemptStatus.InProgress);
         if (inProgress is not null)
         {
+            await ExamLockService.LockAttemptAsync(db, inProgress.Id);
+            await db.Entry(inProgress).ReloadAsync();
+        }
+        if (inProgress is not null && inProgress.Status == AttemptStatus.InProgress)
+        {
             if (policy == RevocationScope.ForceSubmit) await attemptService.ForceSubmitInternalAsync(db, inProgress, assignment, task, ActorId(), reason, now);
             else if (policy == RevocationScope.VoidScore) await attemptService.ForceSubmitInternalAsync(db, inProgress, assignment, task, ActorId(), reason, now, zeroScore: true);
-            else if (policy == RevocationScope.VoidAttempt)
+            else if (policy is RevocationScope.VoidAttempt or RevocationScope.KeepScore)
             {
-                inProgress.Status = AttemptStatus.Voided; inProgress.VoidedAt = now; inProgress.VoidReason = reason; inProgress.RowVersion++;
-                assignmentsEvent(db, inProgress.Id, ActorId(), "Voided", new { reason }, $"attempt-void:{inProgress.Id}:{inProgress.RowVersion}", now);
+                // KeepScore 保留已提交/已判分的历史成绩；未交卷的进行中答卷必须终止作废，避免在 Revoked 安排下残留可继续作答或触发超时扫描异常的 InProgress 答卷。
+                inProgress.Status = AttemptStatus.Voided; inProgress.VoidedAt = now;
+                inProgress.VoidReason = policy == RevocationScope.KeepScore ? $"{reason}（保留已有成绩，终止未交卷作答）" : reason;
+                inProgress.RowVersion++;
+                assignmentsEvent(db, inProgress.Id, ActorId(), "Voided", new { reason, policy }, $"attempt-void:{inProgress.Id}:{inProgress.RowVersion}", now);
                 await db.SaveChangesAsync();
             }
         }

@@ -7,23 +7,29 @@ using ExamOps.Infra.Storage;
 using ExamOps.Infra.Verification;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
-using System.Net;
+using Microsoft.AspNetCore.Http.Features;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])
+    && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
+    && !builder.Configuration.GetSection("Kestrel:Endpoints").Exists())
+{
+    var port = Environment.GetEnvironmentVariable("EXAMOPS_PORT");
+    var listenPort = int.TryParse(port, out var p) && p is >= 1 and <= 65535 ? p : 5080;
+    builder.WebHost.UseUrls($"http://0.0.0.0:{listenPort}");
+}
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 12 * 1024 * 1024);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 12 * 1024 * 1024);
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(30));
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    options.ForwardLimit = 1;
-    foreach (var proxy in builder.Configuration.GetSection("ReverseProxy:KnownProxies").Get<string[]>() ?? [])
-    {
-        if (IPAddress.TryParse(proxy, out var address)) options.KnownProxies.Add(address);
-    }
 });
+builder.Services.AddInfrastructure(builder);
+var app = builder.Build();
 
 if (args.Contains("--import-parser-check"))
 {
@@ -97,6 +103,7 @@ if (args.Contains("--init-admin"))
     return;
 }
 
+app.UseForwardedHeaders();
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -124,7 +131,9 @@ app.MapPost("/logout", async (HttpContext httpContext, [FromForm] string? __Requ
     return Results.Redirect("/login");
 }).RequireAuthorization();
 
-app.MapGet("/health", async (IFileStorage storage, StartupValidator validator, CancellationToken cancellationToken) =>
+app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
+
+async Task<IResult> CheckReadinessAsync(IFileStorage storage, StartupValidator validator)
 {
     bool db;
     try
@@ -132,12 +141,17 @@ app.MapGet("/health", async (IFileStorage storage, StartupValidator validator, C
         await validator.ValidateAsync();
         db = true;
     }
-    catch (Exception ex) when (ex is InvalidOperationException or Npgsql.PostgresException)
+    catch (Exception ex) when (ex is InvalidOperationException or NpgsqlException or TimeoutException)
     {
         db = false;
     }
     var writable = storage.TryProbeWritable();
-    return Results.Ok(new { status = db && writable ? "ok" : "degraded", db, writable });
-}).AllowAnonymous();
+    var ready = db && writable;
+    var payload = new { status = ready ? "ok" : "unhealthy", db, writable };
+    return ready ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+}
+
+app.MapGet("/health/ready", CheckReadinessAsync);
+app.MapGet("/health", CheckReadinessAsync);
 
 app.Run();

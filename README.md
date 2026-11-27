@@ -2,136 +2,106 @@
 
 # ExamOps
 
-### 严谨、极简、零冗余依赖的企业级在线考试运营平台
+### 把发考、监考、阅卷和成绩公布，收进一条可审计的流程
 
-**4 步极速发考 · 权限感知实时看板 · 纯本地离线部署 · 生产级审计与即时会话下线**
+**面向企业内网与培训考核的客观题考试平台**<br>
+4 步极速发考 · 权限感知运营看板 · 服务端权威计时 · 全链路审计
 
 <p>
-  <img src="https://img.shields.io/badge/.NET-8.0-1E3A8A?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8.0" />
-  <img src="https://img.shields.io/badge/Blazor-Interactive%20Server-2563EB?style=flat-square&logo=blazor&logoColor=white" alt="Blazor Server" />
-  <img src="https://img.shields.io/badge/PostgreSQL-17%20SQL--First-0F766E?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 17" />
-  <img src="https://img.shields.io/badge/EF%20Core-8.0.11-334155?style=flat-square" alt="EF Core 8" />
-  <img src="https://img.shields.io/badge/Extra%20NuGet-0%20Deps-059669?style=flat-square" alt="Zero Extra Dependencies" />
-  <img src="https://img.shields.io/badge/Theme-Swiss%20Light%20%2F%20Dark-0F172A?style=flat-square" alt="Light and Dark Theme" />
-  <img src="https://github.com/tmy2623231/ExamOps/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8.0" />
+  <img src="https://img.shields.io/badge/Blazor-Interactive%20Server-2563EB?style=flat-square&logo=blazor&logoColor=white" alt="Blazor Interactive Server" />
+  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 17" />
+  <img src="https://img.shields.io/badge/SQL--First-Schema%201.1.0-0F766E?style=flat-square" alt="SQL-first Schema 1.1.0" />
+  <img src="https://img.shields.io/badge/XLSX%2FQR-原生实现-059669?style=flat-square" alt="原生 XLSX 与二维码实现" />
+  <img src="https://github.com/tmy2623231/ExamOps/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
 </p>
 
-[为什么做 ExamOps](#-为什么做-examops) · [核心体验](#-核心体验按角色设计) · [业务全景与架构](#-业务全景与分层架构) · [工程与安全底线](#-硬核工程与生产安全) · [3 分钟启动](#-3-分钟快速启动)
+[核心能力](#核心能力) · [快速开始](#快速开始) · [架构设计](#架构设计) · [安全与审计](#安全与审计) · [生产运维](#生产运维) · [验证命令](#验证命令)
 
 </div>
 
 ---
 
-## 💡 为什么做 ExamOps？
+## 项目定位
 
-很多企业内网或培训考核场景并不需要臃肿的“大而全”网校系统，而是需要一套**部署简单、边界清晰、考务少折腾、考生零干扰、审计经得起查**的严肃客观题考试工具。
+ExamOps 是一套**单工程、可离线交付、权限边界清晰**的考试运营工具，覆盖组织与题库、组卷发考、在线作答、复核调分、成绩发布和报表导出。
 
-| 常见痛点 | ExamOps 的解法 |
-|---|---|
-| 建部门、建人、录题、组卷、发考要在七八个页面来回跳 | **行业组织模板一键初始化** + **员工/题库 Excel 批量导入** + **4 步极速发考向导**，一气呵成 |
-| 后台长得像十年前的表格，深色模式没有、手机端挤爆 | **Swiss 理性深蓝设计系统** + **Lucian UX/UI 精致微动效** + **浅/深双色主题** + **375px 移动端适配** |
-| 考试进行中不知道谁没考，还得自己导出表格比对 | **运营看板实时进度条**一点即开**催考抽屉**，按“未开始 / 作答中 / 已交卷”分组，**一键复制未考名单** |
-| 员工扫码进系统，侧边栏一堆看不懂的管理菜单 | **纯考生极简免打扰模式** + **本地离线生成扫码二维码**，扫码登录后直达本场考试 |
-| 停用了离职/违纪员工账号，对方开着的页面还能继续操作 | **内存广播 + 4 秒数据库探针双保险**，5 秒内强制踢下线旧 Blazor Circuit 并吊销 Cookie |
-| 内网离线环境装一堆第三方 NuGet / CDN 资源直接报错 | **零额外第三方包**：`.xlsx` 解析/生成、QR 二维码 SVG 均基于 `.NET 8 BCL` 原生实现，100% 离线可用 |
+当前版本聚焦**单选、多选和判断题**，不包含主观题人工阅卷、题库去重算法或分布式集群能力。生产部署边界为**单实例应用 + PostgreSQL**；本地文件、Blazor SignalR Circuit 和登录限流均保存在进程内。
 
----
+| 场景 | ExamOps 提供的路径 |
+| :--- | :--- |
+| 建部门、导员工、录题、发考来回跳转 | 组织模板、员工/题库 XLSX 批量导入、四步发考向导 |
+| 考试进度靠人工导出比对 | 权限感知实时看板、进度抽屉、未考名单一键复制 |
+| 已发布题目或试卷被误改 | 不可变版本发布，修订通过新草稿推进 |
+| 调分只有结果、没有依据 | 保留原始自动分，调分原因与历史完整留痕 |
+| 停用账号后旧页面仍可操作 | 会话注册表与数据库探针协同撤销在线会话 |
+| 内网无法访问 CDN 或额外组件 | 无前端 CDN；XLSX 与二维码基于 .NET BCL 实现 |
 
-## ✨ 核心体验（按角色设计）
+## 核心能力
 
-### 1. 给考务管理员：少配、少点、看得清
-- **📊 权限感知实时运营看板 (`/`)**
-  - 按当前账号的 RBAC 权限与部门树数据范围动态组装，不越权、不堆砌。
-  - 内置 **滚动数字 KPI 卡片**、**可交互重分环形图**（悬停外滑、点击图例动态重算占比）、**近期考试快速掌控表**与全局 **`Ctrl+K` 快捷命令面板**。
-  - 点击任务进度条直接弹出 **考中进度与催考抽屉**，一键复制未参考人员名单发到工作群。
-- **⚡ 极速发考四步向导 (`/exams/quick-publish`)**
-  - **Step 1 选/传题库**：选用现有题库，或**站内直接上传 `.xlsx` 模板**自动校验、导入并发布题目。
-  - **Step 2 勾选出题**：自由切换「固定题组卷」或「按题型随机抽题」，勾选单选/多选/判断题量与分值，实时计算总分与建议及格线。
-  - **Step 3 选时间与对象**：一键套用 `立即开放 2 小时 / 今天全天 / 未来 3 天 / 本周 7 天` 预设，勾选是否同步下发部门全体成员。
-  - **Step 4 全景预览一键发布**：核对无误后，后端在**单一数据库事务**内原子化完成 `建卷 → 发卷 → 建任务 → 发布任务 → 下发批次`，任一步失败全量回滚。
-  - 支持 **扫码分享（离线纯 SVG 二维码）** 与 **历史考试一键复用重发**。
-- **🏢 组织模板与员工批量建号 (`/org/departments` & `/org/users`)**
-  - 内置 **安全生产/制造业、互联网研发、院校培训、极简扁平** 4 套行业组织架构模板，树形预览、单事务幂等套用（同名部门自动跳过）。
-  - 员工管理支持 **4 套岗位预设**（普通考生 / 部门考务 / 命题老师 / 阅卷复核员）及 **Excel 批量导入**，自动生成 13 位初始强密码并支持一键复制发号清单。
+### 1. 考务管理：从组织到发考
 
-### 2. 给命题与阅卷复核员：严谨、留痕、不可篡改
-- **专注客观题边界**：首版聚焦 **单选 / 多选（全对得分） / 判断**，交卷即精确自动判分；已发布题目与试卷版本**永久不可变**，修订通过新草稿版本推进。
-- **异常复核与调分留痕 (`/exams/reviews`)**：支持记录格式异常、判分异议、作废申请；调分强制填写 ≥10 字原因，保留原始 `auto_score` 与完整调分历史。
-- **不可变成绩发布快照 (`/exams/publication` & `/exams/reports`)**：支持 `Latest / First / Highest / Average` 计分策略，发布生成带 SHA-256 校验的快照；支持撤回重发、七类维度统计与防公式注入的 CSV/XLSX 鉴权导出。
+- **组织与人员**：行业组织模板、部门树、岗位预设、员工批量导入与初始密码清单。
+- **题库管理**：XLSX 模板导入、行级错误反馈、草稿/发布状态管理、已发布版本保护。
+- **四步极速发考**：选题库 → 选题型与分值 → 设置时间与对象 → 预览并原子发布。
+- **两种组卷方式**：固定题组卷，或按题型与数量建立随机候选题池。
+- **实时运营看板**：按 RBAC 权限和部门数据范围组装 KPI、进度、统计图与近期考试。
+- **批量下发**：支持部门及下级部门；考试安排可通过本地生成的 SVG 二维码分享。
 
-### 3. 给普通考生：清爽、专注、稳如磐石
-- **纯考生极简免打扰模式**：仅具备 `Candidate` 角色的账号自动隐藏全部管理导航，界面只留「运营看板 / 我的考试 / 修改密码」。
-- **可靠的在线作答 (`/exams/attempts/{id}`) & 成绩查询 (`/exams/results/{id}`)**:
-  - 服务端权威倒计时与截止宽限判定（不信任浏览器本地时间），30 秒自动保存 + 断线本地暂存恢复。
-  - 成绩未公布前严格隐藏分数与答案，公布后清晰展示最终分、来源答卷与发布批次。
+### 2. 命题与复核：结果可解释，变更可追溯
 
----
+- **精确自动判分**：多选题全对得分，交卷后保存原始 `auto_score`。
+- **异常复核**：记录格式异常、判分异议与作废申请。
+- **调分留痕**：强制填写调分原因，保留每次调整的操作者、时间与前后分值。
+- **成绩发布快照**：支持 `Latest / First / Highest / Average` 策略，发布内容带 SHA-256 校验。
+- **鉴权报表**：按部门、考试、角色等维度统计，导出 CSV/XLSX 时防公式注入。
 
-## 🧭 业务全景与分层架构
+### 3. 考生作答：专注答题，断线不丢
 
-```mermaid
-flowchart LR
-    A["1. 组织与题库\n行业模板 · 员工/题库 XLSX 导入"] --> B["2. 极速发考 / 高级组卷\n固定卷或随机池 · 不可变版本发布"]
-    B --> C["3. 下发与开考\n部门批量下发 · 离线二维码直达"]
-    C --> D["4. 在线作答与自动判分\n服务端计时 · 自动保存 · 精确判分"]
-    D --> E["5. 复核与调分\n异常/异议留痕 · 保留原始自动分"]
-    E --> F["6. 公布与报表\nSHA-256 不可变快照 · 鉴权安全导出"]
+- **极简考生模式**：仅含 `Candidate` 角色的账号隐藏管理导航。
+- **服务端计时**：倒计时、开放时间与截止宽限由服务端判定，不信任浏览器时间。
+- **自动保存**：每 30 秒保存，并在浏览器本地暂存未同步答卷用于断线恢复。
+- **成绩保密**：未发布成绩前隐藏分数与答案；发布后展示最终分、来源答卷与发布批次。
+- **会话撤销**：账号停用、改密或权限变化后，在线会话会被主动下线。
+
+## 快速开始
+
+> [!WARNING]
+> 当前代码基线为 **.NET 8 / EF Core 8**。.NET 8 已于 **2026 年 11 月 10 日结束官方支持**，详见 [.NET 支持策略](https://dotnet.microsoft.com/zh-cn/platform/support/policy/dotnet-core)。可用于本地评估与内网验证；生产使用前应完成运行时升级与兼容性验证。
+
+### 环境要求
+
+- [.NET 8 SDK](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
+- [PostgreSQL 17](https://www.postgresql.org/download/)
+- `psql`、`createdb` 命令行工具
+- 支持 WebSocket 的现代浏览器
+
+### 第 1 步：获取代码
+
+```bash
+git clone https://github.com/tmy2623231/ExamOps.git
+cd ExamOps
 ```
 
-严格遵循 **单工程、单向分层** 架构，拒绝过度拆包，确保维护清晰直观：
+### 第 2 步：创建数据库与最小权限角色
 
-```text
-Components / Api  ──▶  BLL（业务编排与校验）  ──▶  DAL（Repository + UnitOfWork）  ──▶  Model
+以下命令以本机 PostgreSQL 管理员 `postgres` 为例。请将 `REPLACE_WITH_A_STRONG_PASSWORD` 替换为独立强密码。
+
+```bash
+createdb -h 127.0.0.1 -U postgres examops_db
+psql -h 127.0.0.1 -U postgres -d examops_db
 ```
 
-<details>
-<summary><strong>点击展开完整目录结构</strong></summary>
+在 `psql` 中执行：
 
-```text
-ExamOps/
-├─ Api/                          # REST 接口、防伪校验、模板下载与鉴权导出
-├─ BLL/                          # 业务服务、Validators、极速发考编排、权限与数据范围
-├─ Components/                   # Blazor Interactive Server 页面、布局与 Lucian 动效组件
-│  ├─ Layout/                    # MainLayout (顶栏命令面板 / 昼夜开关 / Toast / SessionGuard)
-│  ├─ Pages/                     # 看板、极速发考、组织、题库、组卷、作答、复核、公布、报表
-│  └─ Shared/                    # 滚动数字、动态环形图、滑动单选卡、二维码弹窗、通用模态/分页
-├─ DAL/                          # ExamDbContext、EF Configurations、Repositories、UnitOfWork
-├─ Infra/                        # 认证鉴权、会话即时下线、密钥校验、文件存储、日志、后台任务、自检
-├─ Model/                        # Entities、Dtos、Enums、Common (Result / PagedResult / TimeFormat)
-├─ Properties/                   # launchSettings.json
-├─ sql/                          # SQL-first 权威脚本 (schema / seed / security / smoke_test)
-├─ wwwroot/                      # Swiss 浅/深设计令牌 CSS 与官方题目导入模板
-├─ ExamOps.csproj                # .NET 8 单工程（仅 EF Core 8 + Npgsql 8 两个包）
-├─ ExamOps.sln
-├─ Program.cs
-├─ appsettings.example.json      # 配置模板（真值 appsettings.json 已被 .gitignore 忽略）
-└─ README.md
+```sql
+CREATE ROLE examops_app LOGIN PASSWORD 'REPLACE_WITH_A_STRONG_PASSWORD';
+\q
 ```
 
-</details>
+### 第 3 步：按顺序初始化数据库
 
----
-
-## 🛡️ 硬核工程与生产安全
-
-- **即时会话下线（P0 闭环）**：`UserSessionRegistry` + `SessionGuard` 双重机制——账号被停用、改密或权限变更后，在线页面在 **5 秒内自动跳回登录页** 并吊销旧 Cookie。
-- **生产密钥防泄漏门禁**：非 Development 环境启动时，`SecretConfigValidator` 强制拦截空密码、`<数据库密码>` 等占位符以及 `postgres` 超级用户；发布产物自动排除 `appsettings.json` 与 `Data/`。
-- **SQL-First & Append-Only 数据库防护**：单一权威源 `sql/schema.sql`（Schema `1.1.0`），配合 `sql/security.sql` 最小权限角色 `examops_app` 与触发器，确保审计日志、答卷事件、调分记录与成绩发布快照**只能追加、不可篡改或删除**。
-- **安全文件与导入隔离**：上传文件一律校验扩展名与 ZIP/OOXML 魔数、拒绝宏与公式、GUID 落盘至 `Data/`（永不进 `wwwroot/`），数据库只存相对正斜杠路径，下载走鉴权流式端点并附带 `X-Content-Type-Options: nosniff`。
-- **零警告 & 内置全链路自检**：全项目 `<Nullable>enable</Nullable>` 零警告编译，内置离线解析自检与 Phase 1–5 事务回滚自检（不污染业务库）。
-- **生产传输与回退授权**：非 Development 环境启用 HSTS、HTTPS 跳转、Secure Cookie 与默认认证策略；反向代理通过 `ReverseProxy:KnownProxies` 显式声明信任地址。
-
----
-
-## ⚡ 3 分钟快速启动
-
-### 前置要求
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- [PostgreSQL 17](https://www.postgresql.org/)
-
-### 第 1 步：初始化数据库（SQL-First）
-
-创建数据库 `examops_db` 与最小权限应用角色 `examops_app`，依次执行：
+必须先生成表结构与种子数据，最后收紧应用角色权限；不要调换 `seed.sql` 与 `security.sql` 的顺序。
 
 ```bash
 psql -h 127.0.0.1 -U postgres -d examops_db -v ON_ERROR_STOP=1 -f sql/schema.sql
@@ -139,59 +109,200 @@ psql -h 127.0.0.1 -U postgres -d examops_db -v ON_ERROR_STOP=1 -f sql/seed.sql
 psql -h 127.0.0.1 -U postgres -d examops_db -v ON_ERROR_STOP=1 -f sql/security.sql
 ```
 
-### 第 2 步：注入连接串并初始化管理员
+数据库 Schema 的单一权威源是 [`sql/schema.sql`](sql/schema.sql)，当前要求版本 **1.1.0**。项目采用 SQL-first，不再引入 EF Migrations。
 
-复制 `appsettings.example.json` 为本地 `appsettings.json`（已被 `.gitignore` 忽略），或直接通过环境变量注入：
+### 第 4 步：注入配置并初始化管理员
+
+PowerShell 示例：
 
 ```powershell
-$env:EXAMOPS_DB_CONNECTION = "Host=localhost;Port=5432;Database=examops_db;Username=examops_app;Password=<YOUR_PASSWORD>;SSL Mode=Disable"
-$env:EXAMOPS_ADMIN_PASSWORD = "<至少12位强密码>"
+$env:EXAMOPS_DB_CONNECTION = "Host=127.0.0.1;Port=5432;Database=examops_db;Username=examops_app;Password=YOUR_APP_DB_PASSWORD;SSL Mode=Disable"
+$env:EXAMOPS_ADMIN_PASSWORD = "YOUR_12_TO_128_CHAR_ADMIN_PASSWORD"
 
 dotnet run --project ExamOps.csproj -- --init-admin
 ```
 
-### 第 3 步：启动应用
+也可以复制 [`appsettings.example.json`](appsettings.example.json) 为本地 `appsettings.json` 后修改；该文件已被 `.gitignore` 排除。生产环境禁止使用 `postgres` 超级用户、空密码或占位密码启动。
+
+### 第 5 步：启动并登录
 
 ```powershell
-dotnet run --project ExamOps.csproj --urls http://localhost:5080
+dotnet run --project ExamOps.csproj
 ```
 
-打开浏览器访问 **`http://localhost:5080`**，使用 `admin` 与刚设置的密码登录即可体验完整运营看板与极速发考向导。
+默认监听 **`0.0.0.0:5080`**。本机访问 <http://localhost:5080>，局域网访问 `http://<服务器IP>:5080`，使用 `admin` 与刚设置的密码登录。
 
----
-
-## 🧪 内置验证与自检命令
-
-<details>
-<summary><strong>点击查看全部零警告构建与 Phase 1–5 事务回滚自检命令</strong></summary>
+仅监听本机或修改端口：
 
 ```powershell
-# 1. 零警告构建
-dotnet build ExamOps.sln
+dotnet run --no-launch-profile --project ExamOps.csproj --urls http://127.0.0.1:8080
+```
 
-# 2. 离线算法与 XLSX 安全解析自检（无需数据库）
-dotnet run --no-build --project ExamOps.csproj -- --self-check
-dotnet run --no-build --project ExamOps.csproj -- --import-parser-check
+## 架构设计
 
-# 3. Phase 1–5 业务事务自检（全部测试数据自动回滚，零残留）
-dotnet run --no-build --project ExamOps.csproj -- --phase1-check
-dotnet run --no-build --project ExamOps.csproj -- --phase2-check
-dotnet run --no-build --project ExamOps.csproj -- --phase3-check
-dotnet run --no-build --project ExamOps.csproj -- --phase4-check
-dotnet run --no-build --project ExamOps.csproj -- --phase5-check
+### 业务闭环
+
+```mermaid
+flowchart LR
+    A["组织与题库<br/>模板 · 批量导入"] --> B["组卷与发布<br/>固定题组 · 随机池"]
+    B --> C["考试下发<br/>部门 · 二维码"]
+    C --> D["在线作答<br/>计时 · 保存 · 判分"]
+    D --> E["复核与调分<br/>异议 · 留痕"]
+    E --> F["成绩与报表<br/>快照 · 鉴权导出"]
+```
+
+### 单向分层
+
+```mermaid
+flowchart TB
+    UI["Components / Api<br/>Blazor 页面与 REST 端点"] --> BLL["BLL<br/>业务编排 · 校验 · 权限"]
+    BLL --> DAL["DAL<br/>DbContext · Repository · UnitOfWork"]
+    DAL --> MODEL["Model<br/>Entity · DTO · Enum · Result"]
+    INFRA["Infra<br/>认证 · 存储 · 日志 · 后台任务"] --> UI
+    INFRA --> BLL
+    INFRA --> DAL
+```
+
+关键约定：
+
+- `Components / Api → BLL → DAL → Model`，上层依赖下层，反向依赖被禁止。
+- 数据库上下文通过 `IDbContextFactory<ExamDbContext>` 创建，禁止业务代码直接 `new DbContext()`。
+- 只读查询使用 `AsNoTracking()`；分页必须带唯一列兜底排序。
+- 跨表写入使用共享 `DbContext` 或显式事务；业务写操作必须落审计日志。
+- 用户上传、导出、日志与临时文件只写入 `Data/`，数据库只保存相对正斜杠路径。
+
+<details>
+<summary><strong>查看项目结构</strong></summary>
+
+```text
+ExamOps/
+├─ Api/                          # REST 端点、模板下载、鉴权导出
+├─ BLL/                          # 业务服务、权限与数据范围、自检编排
+├─ Components/
+│  ├─ Layout/                    # 主布局、命令面板、主题、会话守护
+│  ├─ Pages/                     # 看板、发考、作答、复核、公布、报表
+│  └─ Shared/                    # 图表、二维码、模态框、分页等共享组件
+├─ DAL/                          # EF Core 上下文、配置、Repository、UnitOfWork
+├─ Infra/                        # 认证、会话、存储、日志、导入、后台任务
+├─ Model/                        # 实体、DTO、枚举与通用返回类型
+├─ sql/
+│  ├─ schema.sql                 # Schema 1.1.0 单一权威源
+│  ├─ seed.sql                   # 幂等角色、权限与初始组织数据
+│  ├─ security.sql               # 最小权限与追加型数据保护
+│  └─ smoke_test.sql             # 数据库结构与约束冒烟检查
+├─ wwwroot/                      # 静态资源、主题样式与官方导入模板
+├─ .github/workflows/ci.yml      # Release 构建与离线自检
+├─ ExamOps.csproj                # .NET 8 单工程
+├─ appsettings.example.json      # 无真实密钥的配置模板
+└─ README.md
 ```
 
 </details>
 
-## 贡献与安全
+## 安全与审计
 
-- 开发约定与验证清单见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-- 漏洞请通过 [SECURITY.md](SECURITY.md) 中的私密渠道报告，不要在公开 Issue 中提交秘密或未修复漏洞。
-- GitHub Actions 会在 `main` 推送和 Pull Request 时执行 Release 构建与离线自检。
+| 控制点 | 实现方式 |
+| :--- | :--- |
+| 身份与权限 | Cookie 认证、37 项细粒度权限、9 个系统角色、部门数据范围 |
+| 会话撤销 | `UserSessionRegistry` 广播 + 数据库状态探针，旧 Circuit 与 Cookie 一并失效 |
+| 生产密钥 | 非 Development 环境拒绝空密码、占位密码与 `postgres` 超级用户 |
+| 数据库权限 | `examops_app` 最小权限；审计、答卷事件、调分与成绩快照禁止更新/删除 |
+| 文件导入 | 校验扩展名、OOXML/ZIP 结构、XML 与解压上限，拒绝宏、公式和外部链接 |
+| 文件隔离 | GUID 命名、`Data/` 存储、相对路径入库、鉴权下载与 `nosniff` |
+| 请求防护 | 默认认证策略、防伪令牌、登录/导入限流、生产 HSTS 与 Secure Cookie |
+| 审计追溯 | 业务写操作记录操作者、动作、实体与结果；关键事实表只追加 |
 
----
+发现安全问题请使用 [GitHub 私密漏洞报告](https://github.com/tmy2623231/ExamOps/security/advisories/new)。不要在公开 Issue 中提交凭据、连接串、个人数据或尚未修复的漏洞细节。
 
-## 🎨 设计与动效致谢
+## 生产运维
 
-- 界面采用 **Swiss Minimalism** 理性深蓝设计体系（浅/深双色模式，支持 `prefers-reduced-motion` 无障碍降级）。
-- 昼夜天空开关（`#021`）、`Ctrl+K` 命令面板（`#046`）、堆叠通知（`#070`）、滚动数字 KPI（`#098`）、动态重分环形图（`#097`）、滑动高亮单选卡（`#015`）及四步向导进度条（`#042`）均移植自 **[Lucian UX/UI Prompt](https://lucianlabs.dev/uxui-prompt/)**（MIT License），对应组件顶部均保留完整 MIT 许可证声明。
+> [!IMPORTANT]
+> **当前仅支持单实例部署。** 反向代理必须支持 WebSocket 长连接，并正确透传 `X-Forwarded-For` 与 `X-Forwarded-Proto`。多实例共享数据库前，需要先将文件存储、会话注册表和限流状态外置。
+
+### 健康检查
+
+| 端点 | 检查内容 | 正常 | 异常 |
+| :--- | :--- | :--- | :--- |
+| `GET /health/live` | 进程是否响应 | `200` | 由进程/编排器处理 |
+| `GET /health/ready` 或 `GET /health` | PostgreSQL、Schema 1.1.0、数据目录可写性 | `200` | `503` |
+
+### 部署清单
+
+1. 使用受支持的 .NET 运行时，并通过 `EXAMOPS_DB_CONNECTION` 或受控密钥系统注入连接串。
+2. 设置 `ASPNETCORE_ENVIRONMENT=Production`，启用 HTTPS、HSTS 与 Secure Cookie。
+3. 只信任实际反向代理地址；远程代理在 `ReverseProxy:KnownProxies` 中显式声明。
+4. 将 `AllowedHosts` 从模板中的 `*` 收紧为实际域名或 IP。
+5. 为 `Data/` 配置持久化磁盘、备份与最小文件系统权限。
+6. 启动后检查 `/health/ready`、`Data/logs/error/` 与审计记录。
+7. 应用配置 30 秒优雅停机；发布或回滚时等待旧进程与端口完全释放。
+
+### 备份与恢复
+
+数据库与 `Data/uploads` 必须作为一致性备份单元。恢复前停止应用，避免备份期间继续写入。
+
+```powershell
+# 在仓库根目录执行
+New-Item -ItemType Directory -Force -Path backup | Out-Null
+pg_dump -h 127.0.0.1 -U postgres -Fc -f "backup/examops_$(Get-Date -Format yyyyMMdd_HHmm).dump" examops_db
+Compress-Archive -Path "Data/uploads" -DestinationPath "backup/uploads_$(Get-Date -Format yyyyMMdd_HHmm).zip" -Force
+
+# 恢复演练：先停止应用，再恢复数据库与上传文件
+pg_restore -h 127.0.0.1 -U postgres --clean --if-exists -d examops_db "backup/examops_YYYYMMDD_HHMM.dump"
+Expand-Archive -Path "backup/uploads_YYYYMMDD_HHMM.zip" -DestinationPath "Data" -Force
+```
+
+恢复后检查 `/health/ready`，抽查附件下载、成绩发布快照与审计记录，并记录恢复演练结果。
+
+### 升级与回滚
+
+- 应用启动强校验 Schema **1.1.0**；数据库升级必须先确认新旧应用兼容。
+- 普通回滚只切换应用二进制，保留兼容的数据库与 `Data/`，不要把结构降级脚本当作通用回滚方案。
+- 涉及 Schema 变更时，先备份，再在临时库完成升级与恢复演练。
+- 回滚后检查就绪端点、错误日志、端口占用和关键业务链路。
+
+## 验证命令
+
+### Release 构建
+
+```powershell
+dotnet restore ExamOps.sln
+dotnet build ExamOps.sln --configuration Release --no-restore
+```
+
+### 离线算法与 XLSX 解析自检
+
+这两个命令不会连接数据库，但依赖注入阶段仍要求格式合法的连接串。PowerShell 可设置一个仅用于自检的占位配置：
+
+```powershell
+$env:EXAMOPS_DB_CONNECTION = "Host=127.0.0.1;Port=5432;Database=examops_check;Username=examops_check;Password=offline-check-only;SSL Mode=Disable"
+
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --self-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --import-parser-check
+```
+
+### 数据库与业务事务自检
+
+以下命令需要连接已初始化的数据库；Phase 1–5 使用事务回滚，不保留测试业务数据。
+
+```powershell
+psql -h 127.0.0.1 -U postgres -d examops_db -v ON_ERROR_STOP=1 -f sql/smoke_test.sql
+
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase1-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase2-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase3-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase4-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase4-concurrency-check
+dotnet run --no-build --configuration Release --project ExamOps.csproj -- --phase5-check
+```
+
+GitHub Actions 在 `main` 推送与 Pull Request 时执行 Release 构建、算法自检与 XLSX 解析自检。
+
+## 参与贡献
+
+提交变更前请先搜索已有 [Issues](https://github.com/tmy2623231/ExamOps/issues)；较大的功能或架构调整建议先讨论。提交 Pull Request 时请说明变更目的、验证命令、数据库影响与回滚方式。
+
+请保持分层方向与 SQL-first 约定，不提交真实密钥、个人数据、业务导出文件或 `Data/` 内容。数据库结构变更需同步更新 `sql/schema.sql` 与 `sql/smoke_test.sql`，并在临时数据库中验证。
+
+## 设计与动效致谢
+
+界面采用 Swiss Minimalism 理性设计体系，支持浅色/深色主题、移动端适配与 `prefers-reduced-motion` 无障碍降级。昼夜天空开关、`Ctrl+K` 命令面板、堆叠通知、滚动数字、动态环形图、滑动单选卡与四步向导进度条参考了 [Lucian UX/UI Prompt](https://lucianlabs.dev/uxui-prompt)（MIT License），对应组件保留许可证声明。

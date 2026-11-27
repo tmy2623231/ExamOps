@@ -163,8 +163,8 @@ public sealed class ExamAttemptService(
         return new AttemptDetail(attempt.Id, attempt.AssignmentId, task.Id, task.Title, attempt.AttemptNo, attempt.Status,
             attempt.RowVersion, attempt.SubmitKey, attempt.StartedAt, attempt.DeadlineAt, attempt.SubmittedAt,
             attempt.MaxScore, published ? attempt.AutoScore : null, published ? attempt.Score : null, attempt.IsLate, paper, now,
-            attempt.Status == AttemptStatus.InProgress && task.Status != ExamTaskStatus.Revoked && now <= attempt.DeadlineAt.Add(Grace),
-            attempt.Status == AttemptStatus.InProgress && task.Status != ExamTaskStatus.Revoked);
+            attempt.Status == AttemptStatus.InProgress && task.Status != ExamTaskStatus.Revoked && assignment.Status != AssignmentStatus.Revoked && now <= attempt.DeadlineAt.Add(Grace),
+            attempt.Status == AttemptStatus.InProgress && task.Status != ExamTaskStatus.Revoked && assignment.Status != AssignmentStatus.Revoked);
     }
 
     public async Task<Result> SaveAnswersAsync(long attemptId, SaveAnswersInput input, ApiAuditMetadata? api = null)
@@ -172,12 +172,20 @@ public sealed class ExamAttemptService(
         await currentUser.LoadAsync();
         var userId = RequireCandidate();
         if (input.Answers.Count > 500) return Result.Fail("单次保存题目过多", "VALIDATION_ERROR");
+        var scopeInfo = await (from a in uow.Db.ExamAttempts.AsNoTracking()
+                               join asn in uow.Db.ExamAssignments.AsNoTracking() on a.AssignmentId equals asn.Id
+                               where a.Id == attemptId && asn.UserId == userId
+                               select new { asn.TaskId, AssignmentId = asn.Id }).FirstOrDefaultAsync();
+        if (scopeInfo is null) return Result.Fail("答卷不存在", "NOT_FOUND");
         Result? outcome = null;
         try
         {
             await uow.ExecuteInTransactionAsync(async db =>
             {
                 if (await idempotency.FindReplayAsync<ExamTaskMutationResult>(db, api) is not null) { outcome = Result.Ok(); return; }
+                // 统一锁序：Task -> Assignment -> Attempt，避免与撤回/交卷并发死锁。
+                await ExamLockService.LockTaskAsync(db, scopeInfo.TaskId);
+                await ExamLockService.LockAssignmentAsync(db, scopeInfo.AssignmentId);
                 await ExamLockService.LockAttemptAsync(db, attemptId);
                 var attempt = await attempts.GetTrackedAsync(db, attemptId);
                 if (attempt is null) { outcome = Result.Fail("答卷不存在", "NOT_FOUND"); return; }
@@ -185,6 +193,9 @@ public sealed class ExamAttemptService(
                 if (assignment is null || assignment.UserId != userId) { outcome = Result.Fail("答卷不存在", "NOT_FOUND"); return; }
                 if (attempt.RowVersion != input.RowVersion) { outcome = Concurrency(); return; }
                 if (attempt.Status != AttemptStatus.InProgress) { outcome = Result.Fail("答卷已交卷，答案不可修改", "ANSWER_FROZEN"); return; }
+                if (assignment.Status == AssignmentStatus.Revoked) { outcome = Result.Fail("考试安排已撤回，答案不可修改", "ASSIGNMENT_REVOKED"); return; }
+                var task = await db.ExamTasks.AsNoTracking().FirstAsync(x => x.Id == assignment.TaskId);
+                if (task.Status == ExamTaskStatus.Revoked) { outcome = Result.Fail("考试任务已撤回，答案不可修改", "EXAM_TASK_REVOKED"); return; }
                 var now = clock.UtcNow;
                 if (now > attempt.DeadlineAt.Add(Grace)) { outcome = Result.Fail("已超过允许保存时间", "ANSWER_FROZEN"); return; }
                 var stored = Deserialize<StoredPaper>(attempt.PaperSnapshotJson);
@@ -196,13 +207,14 @@ public sealed class ExamAttemptService(
                 var sources = (await attempts.GetAttemptQuestionSourcesAsync(db, versionIds)).ToDictionary(x => x.QuestionVersionId);
                 var options = (await attempts.GetOptionsAsync(db, versionIds)).GroupBy(x => x.QuestionVersionId)
                     .ToDictionary(x => x.Key, x => x.Select(o => o.Label).ToHashSet(StringComparer.Ordinal));
+                var answerMap = (await attempts.GetAnswersTrackedAsync(db, attemptId))
+                    .ToDictionary(x => x.QuestionVersionId);
                 foreach (var item in input.Answers)
                 {
                     var source = sources[item.QuestionVersionId];
                     var validation = ExamAlgorithms.ValidateAnswer(source.Type, item.AnswerJson, options.GetValueOrDefault(item.QuestionVersionId, []));
                     if (!validation.IsSuccess) { outcome = Result.Fail(validation.Error!, "ANSWER_FORMAT_INVALID"); return; }
-                    var answer = await attempts.GetAnswerTrackedAsync(db, attemptId, item.QuestionVersionId);
-                    if (answer is null) { outcome = Result.Fail("答卷题目记录缺失", "ANSWER_FORMAT_INVALID"); return; }
+                    if (!answerMap.TryGetValue(item.QuestionVersionId, out var answer)) { outcome = Result.Fail("答卷题目记录缺失", "ANSWER_FORMAT_INVALID"); return; }
                     answer.AnswerJson = validation.Value; answer.UpdatedAt = now; answer.RowVersion++;
                 }
                 attempt.RowVersion++;
@@ -222,10 +234,11 @@ public sealed class ExamAttemptService(
     {
         await currentUser.LoadAsync();
         var userId = RequireCandidate();
-        var taskId = await uow.Db.ExamAssignments.AsNoTracking()
-            .Where(x => x.Id == uow.Db.ExamAttempts.Where(a => a.Id == attemptId).Select(a => a.AssignmentId).FirstOrDefault() && x.UserId == userId)
-            .Select(x => (long?)x.TaskId).FirstOrDefaultAsync();
-        if (!taskId.HasValue) return Result<AttemptSubmitResult>.Fail("答卷不存在", "NOT_FOUND");
+        var scopeInfo = await (from a in uow.Db.ExamAttempts.AsNoTracking()
+                               join asn in uow.Db.ExamAssignments.AsNoTracking() on a.AssignmentId equals asn.Id
+                               where a.Id == attemptId && asn.UserId == userId
+                               select new { asn.TaskId, AssignmentId = asn.Id }).FirstOrDefaultAsync();
+        if (scopeInfo is null) return Result<AttemptSubmitResult>.Fail("答卷不存在", "NOT_FOUND");
         AttemptSubmitResult? replay = null;
         try
         {
@@ -233,7 +246,8 @@ public sealed class ExamAttemptService(
             {
                 replay = await idempotency.FindReplayAsync<AttemptSubmitResult>(db, api);
                 if (replay is not null) return;
-                await ExamLockService.LockTaskAsync(db, taskId.Value);
+                await ExamLockService.LockTaskAsync(db, scopeInfo.TaskId);
+                await ExamLockService.LockAssignmentAsync(db, scopeInfo.AssignmentId);
                 await ExamLockService.LockAttemptAsync(db, attemptId);
                 var attempt = await attempts.GetTrackedAsync(db, attemptId);
                 if (attempt is null) throw new InvalidOperationException("NOT_FOUND");
@@ -241,6 +255,7 @@ public sealed class ExamAttemptService(
                 if (assignment is null || assignment.UserId != userId) throw new InvalidOperationException("NOT_FOUND");
                 if (attempt.RowVersion != input.RowVersion) throw new InvalidOperationException("CONCURRENCY_CONFLICT");
                 if (attempt.Status != AttemptStatus.InProgress) throw new InvalidOperationException("ATTEMPT_ALREADY_SUBMITTED");
+                if (assignment.Status == AssignmentStatus.Revoked) throw new InvalidOperationException("ASSIGNMENT_REVOKED");
                 var task = await db.ExamTasks.AsNoTracking().FirstAsync(x => x.Id == assignment.TaskId);
                 if (task.Status == ExamTaskStatus.Revoked) throw new InvalidOperationException("EXAM_TASK_REVOKED");
                 var result = await SubmitInternalAsync(db, attempt, assignment, task, false, userId, null, clock.UtcNow);
@@ -348,16 +363,32 @@ public sealed class ExamAttemptService(
             {
                 await uow.ExecuteInTransactionAsync(async db =>
                 {
-                    var taskId = await db.ExamAssignments.AsNoTracking()
-                        .Where(x => x.Id == db.ExamAttempts.Where(a => a.Id == item.Id).Select(a => a.AssignmentId).FirstOrDefault())
-                        .Select(x => (long?)x.TaskId).FirstOrDefaultAsync();
-                    if (taskId.HasValue) await ExamLockService.LockTaskAsync(db, taskId.Value);
+                    var scopeInfo = await (from a in db.ExamAttempts.AsNoTracking()
+                                           join asn in db.ExamAssignments.AsNoTracking() on a.AssignmentId equals asn.Id
+                                           where a.Id == item.Id
+                                           select new { asn.TaskId, AssignmentId = asn.Id }).FirstOrDefaultAsync();
+                    if (scopeInfo is null) return;
+                    await ExamLockService.LockTaskAsync(db, scopeInfo.TaskId);
+                    await ExamLockService.LockAssignmentAsync(db, scopeInfo.AssignmentId);
                     await ExamLockService.LockAttemptAsync(db, item.Id);
                     var attempt = await attempts.GetTrackedAsync(db, item.Id);
                     if (attempt is null || attempt.Status != AttemptStatus.InProgress || now < attempt.DeadlineAt.Add(Grace)) return;
                     var assignment = await assignments.GetTrackedAsync(db, attempt.AssignmentId);
                     if (assignment is null) return;
                     var task = await db.ExamTasks.AsNoTracking().FirstAsync(x => x.Id == assignment.TaskId);
+                    if (assignment.Status == AssignmentStatus.Revoked || task.Status == ExamTaskStatus.Revoked)
+                    {
+                        // 已撤回安排为数据库不可变终态，不得反向改为 Submitted；将残留进行中答卷安全作废以防后台任务循环报错。
+                        attempt.Status = AttemptStatus.Voided;
+                        attempt.VoidedAt = now;
+                        attempt.VoidReason = "安排或任务已撤回，超时自动作废";
+                        attempt.RowVersion++;
+                        attempts.AddEvent(db, NewEvent(attempt.Id, null, "Voided", new { reason = attempt.VoidReason }, $"attempt-auto-void:{attempt.Id}:{attempt.RowVersion}", now));
+                        await audit.WriteAsync(db, clock, new AuditContext(null, "System", null, null, null), "exam_attempt.auto_void_revoked", "ExamAttempt", attempt.Id,
+                            after: new { attempt.Status, attempt.VoidedAt }, reason: attempt.VoidReason);
+                        await db.SaveChangesAsync();
+                        return;
+                    }
                     await SubmitInternalAsync(db, attempt, assignment, task, true, null, "timeout", now);
                     await audit.WriteAsync(db, clock, new AuditContext(null, "System", null, null, null), "exam_attempt.auto_submit", "ExamAttempt", attempt.Id,
                         after: new { attempt.Status, attempt.SubmittedAt }, reason: "timeout");
@@ -476,6 +507,7 @@ public sealed class ExamAttemptService(
     {
         "NOT_FOUND" => "答卷或安排不存在", "CONCURRENCY_CONFLICT" => "数据已被其他操作修改，请刷新后重试",
         "EXAM_TASK_NOT_PUBLISHED" => "考试任务当前未开放", "EXAM_TASK_REVOKED" => "考试任务已撤回",
+        "ASSIGNMENT_REVOKED" => "考试安排已撤回",
         "RESULT_ALREADY_PUBLISHED" => "成绩已发布，请先撤回成绩后再操作",
         "ASSIGNMENT_WINDOW_NOT_OPEN" => "考试尚未开放", "ASSIGNMENT_WINDOW_CLOSED" => "考试时间窗已结束",
         "ATTEMPT_LIMIT_REACHED" => "考试次数已用尽", "ATTEMPT_ALREADY_SUBMITTED" => "答卷已交卷",

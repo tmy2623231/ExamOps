@@ -27,7 +27,7 @@ public sealed class AuthService(
             return Result<AuthenticatedUser>.Fail("登录尝试过于频繁，请 5 分钟后再试", "LOGIN_THROTTLED");
 
         var user = await users.GetByUsernameTrackedAsync(uow.Db, username.ToLowerInvariant());
-        var context = new AuditContext(user?.Id, null, null, ip, userAgent);
+        var context = new AuditContext(user?.Id, user is null ? "Anonymous" : null, null, ip, userAgent);
         if (user is null || string.IsNullOrEmpty(user.PasswordHash)
             || passwordHasher.VerifyHashedPassword(user, user.PasswordHash, password) != PasswordVerificationResult.Success)
         {

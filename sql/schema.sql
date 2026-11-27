@@ -836,7 +836,7 @@ CREATE TABLE IF NOT EXISTS audit_event (
     ip varchar(64) NULL,
     user_agent text NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_audit_actor CHECK (actor_id IS NOT NULL OR actor_role = 'System'),
+    CONSTRAINT ck_audit_actor CHECK (actor_id IS NOT NULL OR actor_role IN ('System', 'Anonymous')),
     CONSTRAINT ck_audit_idempotency_hash CHECK (idempotency_key IS NULL OR request_hash IS NOT NULL),
     CONSTRAINT ck_audit_result_ref CHECK (jsonb_typeof(result_ref_json) = 'object')
 );
@@ -1481,8 +1481,16 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'outbox_message'::regclass AND conname = 'ck_outbox_payload') THEN
         ALTER TABLE outbox_message ADD CONSTRAINT ck_outbox_payload CHECK (jsonb_typeof(payload_json) = 'object');
     END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'audit_event'::regclass
+          AND conname = 'ck_audit_actor'
+          AND pg_get_constraintdef(oid) NOT LIKE '%Anonymous%'
+    ) THEN
+        ALTER TABLE audit_event DROP CONSTRAINT ck_audit_actor;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'audit_event'::regclass AND conname = 'ck_audit_actor') THEN
-        ALTER TABLE audit_event ADD CONSTRAINT ck_audit_actor CHECK (actor_id IS NOT NULL OR actor_role = 'System');
+        ALTER TABLE audit_event ADD CONSTRAINT ck_audit_actor CHECK (actor_id IS NOT NULL OR actor_role IN ('System', 'Anonymous'));
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'audit_event'::regclass AND conname = 'ck_audit_idempotency_hash') THEN
         ALTER TABLE audit_event ADD CONSTRAINT ck_audit_idempotency_hash CHECK (idempotency_key IS NULL OR request_hash IS NOT NULL);

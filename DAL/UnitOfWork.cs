@@ -97,7 +97,11 @@ public sealed class UnitOfWork(IDbContextFactory<ExamDbContext> factory, ILogger
         catch (Exception ex)
         {
             // 数据库已经提交，日志故障不能把业务结果误报为失败并触发重试。
-            _auditLogger.LogError(ex, "数据库已提交，但审计文件输出失败。AuditId={AuditId}", audits.LastOrDefault()?.Id);
+            try { _auditLogger.LogError(ex, "数据库已提交，但审计文件输出失败。AuditId={AuditId}", audits.LastOrDefault()?.Id); }
+            catch (Exception fallbackEx) when (fallbackEx is IOException or UnauthorizedAccessException)
+            {
+                // 降级保护：次级日志通道同时不可写时仍保证已提交事务正常返回。
+            }
         }
     }
 

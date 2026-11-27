@@ -26,9 +26,10 @@ public sealed class FileStorage(string uploadRoot, string tmpRoot, string export
     {
         try
         {
+            Directory.CreateDirectory(uploadRoot);
             Directory.CreateDirectory(tmpRoot);
             Directory.CreateDirectory(exportRoot);
-            foreach (var root in new[] { tmpRoot, exportRoot })
+            foreach (var root in new[] { uploadRoot, tmpRoot, exportRoot })
             {
                 var probe = Path.Combine(root, $".write-probe-{Guid.NewGuid():N}");
                 File.WriteAllText(probe, "ok");

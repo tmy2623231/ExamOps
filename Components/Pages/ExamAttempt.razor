@@ -382,6 +382,12 @@
             await _recoveryGate.WaitAsync(_lifetimeCancellation.Token);
             lockTaken = true;
             if (_disposed || _saveBusy || _submitting) return;
+            // 先尝试保存本地未提交答案，避免在网络抖动时覆盖考生唯一一份答案。
+            if (_dirty.Count > 0)
+            {
+                await SaveAnswersAsync();
+                if (_disposed) return;
+            }
             await LoadAuthoritativeAsync("已按服务器答卷重新同步。");
         }
         catch (OperationCanceledException) when (_disposed) { return; }
@@ -392,22 +398,55 @@
     {
         if (_disposed) return;
         var generation = ++_draftGeneration;
-        _draftChecked = true;
+        var version = ++_loadVersion;
         _authoritativeSync = true;
         _loading = true;
-        _dirty.Clear(); _draftRevision++;
+        _loadError = null;
         try
         {
+            // 先拉取服务器权威答卷，只有拉取成功后才清空本地未保存状态与浏览器草稿。
+            var detail = await Service.GetDetailAsync(Id);
+            if (_disposed || generation != _draftGeneration || version != _loadVersion) return;
+            if (detail is null)
+            {
+                _saveError = "服务器答卷读取失败，本地未保存答案已保留，请检查网络后重试。";
+                return;
+            }
+            _detail = detail;
+            _rowVersion = detail.RowVersion;
+            _questions = detail.Paper.Sections.SelectMany(x => x.Questions).ToList();
+            _questionNumbers = _questions.Select((question, index) => (question.QuestionVersionId, Index: index + 1)).ToDictionary(x => x.QuestionVersionId, x => x.Index);
+            _answers = _questions.ToDictionary(x => x.QuestionVersionId, x => x.AnswerJson);
+            _savedAnswers = new Dictionary<long, string?>(_answers);
+            _dirty.Clear();
+            _saveMetadata = null;
+            _savedAt = null;
+            _saveError = null;
+            _deadlineSaveHandled = false;
+            _draftChecked = true;
+            _draftRevision++;
+            _remaining = detail.DeadlineAt - Clock.UtcNow;
+            if (detail.Status == "InProgress") StartCountdown(); else _countdownTimer?.Stop();
             if (_module is not null)
             {
                 try { await _module.InvokeVoidAsync("clearDraft", Id); }
-                catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "重新同步前清除浏览器草稿失败，连接已断开"); }
+                catch (JSDisconnectedException ex) { Logger.LogWarning(ex, "重新同步后清除浏览器草稿失败，连接已断开"); }
             }
-            if (_disposed) return;
-            await LoadAsync(restoreDraft: false);
             if (!_disposed && generation == _draftGeneration && message is not null) _message = message;
         }
-        finally { if (generation == _draftGeneration) _authoritativeSync = false; }
+        catch (Exception ex)
+        {
+            if (!_disposed && generation == _draftGeneration)
+            {
+                Logger.LogError(ex, "重新同步服务器答卷失败，已保留本地未保存答案");
+                _saveError = "重新同步服务器答卷失败，本地未保存答案已保留，请检查网络后重试。";
+            }
+        }
+        finally
+        {
+            if (!_disposed && version == _loadVersion) _loading = false;
+            if (generation == _draftGeneration) _authoritativeSync = false;
+        }
     }
 
     private void RequestSubmit()
