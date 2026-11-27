@@ -326,7 +326,7 @@ public sealed class ExamAttemptService(
                 await db.SaveChangesAsync();
                 attempts.AddEvent(db, NewEvent(tracked.Id, currentUser.Id, "Voided", new { input.Reason }, $"attempt-void:{tracked.Id}:{tracked.RowVersion}", now));
                 db.RevocationRecords.Add(new RevocationRecord { TargetType = "ExamAttempt", TargetId = tracked.Id, Scope = RevocationScope.VoidAttempt,
-                    Reason = input.Reason.Trim(), ImpactJson = "{}", ActorId = currentUser.Id, ActorRole = "User", IdempotencyKey = RequiredKey(api), CreatedAt = now });
+                    Reason = input.Reason.Trim(), ImpactJson = "{}", ActorId = currentUser.Id, ActorRole = "User", IdempotencyKey = IdempotencyKeyFactory.Create(currentUser, api, $"attempt-void:{attemptId}"), CreatedAt = now });
                 await db.SaveChangesAsync();
                 await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, new { attemptId }), "exam_attempt.void", "ExamAttempt", attemptId,
                     after: new { tracked.Status, input.Reason }, reason: input.Reason.Trim());
@@ -483,7 +483,6 @@ public sealed class ExamAttemptService(
         "PAPER_SELECTION_FAILED" => "随机题池不足，请联系管理员", "INVALID_STATE_TRANSITION" => "当前状态不允许该操作",
         _ => "操作失败，请刷新后重试"
     };
-    private static string RequiredKey(ApiAuditMetadata? api) => api?.IdempotencyKey ?? throw new InvalidOperationException("操作必须提供幂等键");
     private static Result Failure() => Result.Fail("权限不足", "PERMISSION_DENIED");
     private static Result OutOfScope() => Result.Fail("无权操作该答卷", "OUT_OF_SCOPE");
     private static Result Conflict() => Result.Fail("同一幂等键不能用于不同请求", "IDEMPOTENCY_CONFLICT");

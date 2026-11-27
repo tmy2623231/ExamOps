@@ -99,6 +99,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ExamMaintenanceService>();
         services.AddScoped<OutboxConsumerService>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
+        services.AddScoped<ICurrentRequestContext, HttpCurrentRequestContext>();
         services.AddScoped<DataScopeService>();
         services.AddScoped<OrganizationService>();
         services.AddScoped<UserService>();
@@ -116,7 +117,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Phase4Check>();
         services.AddSingleton<Phase5Check>();
 
-        services.AddExamOpsCookieAuthentication();
+        services.AddExamOpsCookieAuthentication(!builder.Environment.IsDevelopment());
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

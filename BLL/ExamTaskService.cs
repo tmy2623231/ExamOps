@@ -242,7 +242,7 @@ public sealed class ExamTaskService(
                 db.RevocationRecords.Add(new RevocationRecord
                 {
                     TargetType = "ExamTask", TargetId = task.Id, Scope = input.InProgressPolicy, Reason = input.Reason.Trim(),
-                    ImpactJson = "{}", ActorId = ActorId(), ActorRole = "User", IdempotencyKey = RequiredKey(api), CreatedAt = clock.UtcNow
+                    ImpactJson = "{}", ActorId = ActorId(), ActorRole = "User", IdempotencyKey = IdempotencyKeyFactory.Create(currentUser, api, $"task-revoke:{taskId}"), CreatedAt = clock.UtcNow
                 });
                 await db.SaveChangesAsync();
                 await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, new { taskId }), "exam_task.revoke", "ExamTask", task.Id,
@@ -373,7 +373,6 @@ public sealed class ExamTaskService(
     }
     private bool Can(string permission) => currentUser.IsAuthenticated && currentUser.HasPermission(permission);
     private long ActorId() => currentUser.Id ?? throw new InvalidOperationException("认证用户缺少 ID");
-    private static string RequiredKey(ApiAuditMetadata? api) => api?.IdempotencyKey ?? throw new InvalidOperationException("撤回操作必须提供幂等键");
     private static Result Failure() => Result.Fail("权限不足", "PERMISSION_DENIED");
     private static Result<T> Failure<T>() => Result<T>.Fail("权限不足", "PERMISSION_DENIED");
     private static Result OutOfScope() => Result.Fail("无权操作该考试任务", "OUT_OF_SCOPE");

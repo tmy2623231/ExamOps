@@ -7,14 +7,23 @@ using ExamOps.Infra.Storage;
 using ExamOps.Infra.Verification;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 12 * 1024 * 1024);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 12 * 1024 * 1024);
-builder.Services.AddInfrastructure(builder);
-var app = builder.Build();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    foreach (var proxy in builder.Configuration.GetSection("ReverseProxy:KnownProxies").Get<string[]>() ?? [])
+    {
+        if (IPAddress.TryParse(proxy, out var address)) options.KnownProxies.Add(address);
+    }
+});
 
 if (args.Contains("--import-parser-check"))
 {
@@ -24,10 +33,12 @@ if (args.Contains("--import-parser-check"))
 
 if (args.Contains("--self-check"))
 {
-    var selfCheck = app.Services.GetRequiredService<SelfCheck>();
-    selfCheck.Run();
+    new SelfCheck(builder.Environment, new ExamOps.Model.Common.SystemClock()).Run();
     return;
 }
+
+builder.Services.AddInfrastructure(builder);
+var app = builder.Build();
 
 await app.Services.GetRequiredService<StartupValidator>().ValidateAsync();
 var roots = ServiceCollectionExtensions.ResolveDataRoots(builder);
@@ -77,15 +88,25 @@ if (args.Contains("--init-admin"))
 {
     using var scope = app.Services.CreateScope();
     var result = await scope.ServiceProvider.GetRequiredService<AdminBootstrap>().InitializeAsync();
-    Console.WriteLine(result.IsSuccess ? "管理员初始化完成。" : result.Error);
-    Environment.ExitCode = result.IsSuccess ? 0 : 1;
+    if (result.IsSuccess) app.Logger.LogInformation("管理员初始化完成。");
+    else
+    {
+        app.Logger.LogError("管理员初始化失败：{Error}", result.Error);
+        Environment.ExitCode = 1;
+    }
     return;
 }
 
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    app.UseHsts();
 }
+
+app.UseForwardedHeaders();
+
+if (!app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -117,6 +138,6 @@ app.MapGet("/health", async (IFileStorage storage, StartupValidator validator, C
     }
     var writable = storage.TryProbeWritable();
     return Results.Ok(new { status = db && writable ? "ok" : "degraded", db, writable });
-});
+}).AllowAnonymous();
 
 app.Run();

@@ -1,9 +1,18 @@
-using System.Security.Claims;
 using ExamOps.DAL.Repositories;
 using ExamOps.Model.Common;
 using ExamOps.Model.Dtos;
 
 namespace ExamOps.BLL;
+
+public interface ICurrentRequestContext
+{
+    long? UserId { get; }
+    string? DisplayName { get; }
+    string? Username { get; }
+    string? TraceId { get; }
+    string? Ip { get; }
+    string? UserAgent { get; }
+}
 
 public interface ICurrentUser
 {
@@ -27,22 +36,22 @@ public sealed class CurrentUserService : ICurrentUser
     private CurrentUserData? _data;
     private Task? _loadTask;
 
-    public CurrentUserService(AccessRepository repository, IHttpContextAccessor httpContextAccessor)
-        : this(userId => repository.GetAsync(userId), httpContextAccessor)
+    public CurrentUserService(AccessRepository repository, ICurrentRequestContext request)
+        : this(userId => repository.GetAsync(userId), request)
     {
     }
 
-    internal CurrentUserService(Func<long, Task<CurrentUserData?>> getData, IHttpContextAccessor httpContextAccessor)
+    internal CurrentUserService(Func<long, Task<CurrentUserData?>> getData, ICurrentRequestContext request)
     {
         _getData = getData;
-        HttpContextAccessor = httpContextAccessor;
+        _request = request;
     }
 
-    private IHttpContextAccessor HttpContextAccessor { get; }
+    private readonly ICurrentRequestContext _request;
 
-    public long? Id => long.TryParse(HttpContextAccessor.HttpContext?.User.FindFirstValue("examops_user_id"), out var id) ? id : null;
-    public string? DisplayName => _data?.DisplayName ?? HttpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name);
-    public string? Username => _data?.Username ?? HttpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier);
+    public long? Id => _request.UserId;
+    public string? DisplayName => _data?.DisplayName ?? _request.DisplayName;
+    public string? Username => _data?.Username ?? _request.Username;
     public bool IsAuthenticated => Id.HasValue;
     public bool MustChangePassword => _data?.MustChangePassword ?? false;
     public IReadOnlyList<RoleAssignmentData> Roles => _data?.Roles ?? [];
@@ -97,8 +106,7 @@ public sealed class CurrentUserService : ICurrentUser
 
     public AuditContext GetAuditContext()
     {
-        var context = HttpContextAccessor.HttpContext;
         return new AuditContext(Id, string.Join(",", _data?.Roles.Select(x => x.Code) ?? []),
-            context?.TraceIdentifier, context?.Connection.RemoteIpAddress?.ToString(), context?.Request.Headers.UserAgent.ToString());
+            _request.TraceId, _request.Ip, _request.UserAgent);
     }
 }

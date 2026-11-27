@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/EF%20Core-8.0.11-334155?style=flat-square" alt="EF Core 8" />
   <img src="https://img.shields.io/badge/Extra%20NuGet-0%20Deps-059669?style=flat-square" alt="Zero Extra Dependencies" />
   <img src="https://img.shields.io/badge/Theme-Swiss%20Light%20%2F%20Dark-0F172A?style=flat-square" alt="Light and Dark Theme" />
+  <img src="https://github.com/tmy2623231/ExamOps/actions/workflows/ci.yml/badge.svg" alt="CI" />
 </p>
 
 [为什么做 ExamOps](#-为什么做-examops) · [核心体验](#-核心体验按角色设计) · [业务全景与架构](#-业务全景与分层架构) · [工程与安全底线](#-硬核工程与生产安全) · [3 分钟启动](#-3-分钟快速启动)
@@ -118,6 +119,7 @@ ExamOps/
 - **SQL-First & Append-Only 数据库防护**：单一权威源 `sql/schema.sql`（Schema `1.1.0`），配合 `sql/security.sql` 最小权限角色 `examops_app` 与触发器，确保审计日志、答卷事件、调分记录与成绩发布快照**只能追加、不可篡改或删除**。
 - **安全文件与导入隔离**：上传文件一律校验扩展名与 ZIP/OOXML 魔数、拒绝宏与公式、GUID 落盘至 `Data/`（永不进 `wwwroot/`），数据库只存相对正斜杠路径，下载走鉴权流式端点并附带 `X-Content-Type-Options: nosniff`。
 - **零警告 & 内置全链路自检**：全项目 `<Nullable>enable</Nullable>` 零警告编译，内置离线解析自检与 Phase 1–5 事务回滚自检（不污染业务库）。
+- **生产传输与回退授权**：非 Development 环境启用 HSTS、HTTPS 跳转、Secure Cookie 与默认认证策略；反向代理通过 `ReverseProxy:KnownProxies` 显式声明信任地址。
 
 ---
 
@@ -180,6 +182,12 @@ dotnet run --no-build --project ExamOps.csproj -- --phase5-check
 ```
 
 </details>
+
+## 贡献与安全
+
+- 开发约定与验证清单见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 漏洞请通过 [SECURITY.md](SECURITY.md) 中的私密渠道报告，不要在公开 Issue 中提交秘密或未修复漏洞。
+- GitHub Actions 会在 `main` 推送和 Pull Request 时执行 Release 构建与离线自检。
 
 ---
 

@@ -198,7 +198,7 @@ public sealed class ReportService(
                 await db.SaveChangesAsync();
                 result = new(entity.Id, fileName, format == "CSV" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     $"/api/reports/exports/{entity.Id}", entity.ExpiresAt, entity.RowCount);
-                var key = string.IsNullOrWhiteSpace(api?.IdempotencyKey) ? $"report-export:{actorId}:{Guid.NewGuid():N}" : api.IdempotencyKey;
+                var key = IdempotencyKeyFactory.Create(currentUser, api, $"report-export:{taskId}");
                 await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, result), "report.export", "ReportExport", entity.Id,
                     after: new { entity.TaskId, entity.ReportType, entity.Format, entity.RowCount, entity.FileKey, entity.ExpiresAt },
                     eventKey: key);

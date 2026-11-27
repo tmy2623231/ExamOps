@@ -6,6 +6,7 @@
 @inject AccessRepository Access
 @inject UserSessionRegistry SessionRegistry
 @inject NavigationManager Navigation
+@inject ILogger<SessionGuard> Logger
 @implements IAsyncDisposable
 
 @code {
@@ -16,6 +17,7 @@
     private string? _expectedVersion;
     private volatile bool _disposed;
     private int _revoked;
+    private bool _probeFailureLogged;
 
     protected override async Task OnInitializedAsync()
     {
@@ -40,11 +42,23 @@
             while (await timer.WaitForNextTickAsync(ct))
             {
                 if (_disposed || _revoked != 0) break;
-                var stamp = await Access.GetStampAsync(_userId);
-                if (stamp is null || stamp.Status != "Active" || stamp.RowVersion.ToString() != _expectedVersion)
+                try
                 {
-                    await TriggerSignOutAsync();
-                    break;
+                    var stamp = await Access.GetStampAsync(_userId);
+                    if (stamp is null || stamp.Status != "Active" || stamp.RowVersion.ToString() != _expectedVersion)
+                    {
+                        await TriggerSignOutAsync();
+                        break;
+                    }
+                    _probeFailureLogged = false;
+                }
+                catch (Exception ex) when (ex is Npgsql.NpgsqlException or Microsoft.EntityFrameworkCore.DbUpdateException or InvalidOperationException)
+                {
+                    if (!_probeFailureLogged)
+                    {
+                        _probeFailureLogged = true;
+                        Logger.LogWarning(ex, "会话状态探测失败，将在后续轮次重试。UserId={UserId}", _userId);
+                    }
                 }
             }
         }

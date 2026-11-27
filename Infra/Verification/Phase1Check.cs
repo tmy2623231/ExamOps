@@ -116,7 +116,7 @@ public sealed class Phase1Check(
                 Check(await uow.Db.AuditEvents.AsNoTracking().CountAsync() > 0, "audit records written");
 
                 var access = services.GetRequiredService<AccessRepository>();
-                var revocationProbe = new CurrentUserService(userId => access.GetAsync(userId, uow.Db), httpContextAccessor);
+                var revocationProbe = new CurrentUserService(userId => access.GetAsync(userId, uow.Db), services.GetRequiredService<ICurrentRequestContext>());
                 await revocationProbe.LoadAsync();
                 Check(revocationProbe.HasPermission(Permissions.DepartmentRead), "active account loads permissions");
                 var adminAccount = await uow.Db.Users.SingleAsync(x => x.Id == adminStamp.Id);

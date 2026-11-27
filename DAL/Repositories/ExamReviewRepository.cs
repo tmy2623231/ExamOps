@@ -152,8 +152,8 @@ public sealed class ExamReviewRepository
         return new PagedResult<ScoreAdjustmentRow>(rows, total, pageIndex, pageSize);
     }
 
-    public Task<ScoreAdjustment?> GetAdjustmentByKeyAsync(ExamDbContext db, string idempotencyKey)
-        => db.ScoreAdjustments.AsNoTracking().SingleOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey);
+    public Task<ScoreAdjustment?> GetAdjustmentByKeyAsync(ExamDbContext db, long attemptId, string idempotencyKey)
+        => db.ScoreAdjustments.AsNoTracking().SingleOrDefaultAsync(x => x.AttemptId == attemptId && x.IdempotencyKey == idempotencyKey);
 
     public void AddAdjustment(ExamDbContext db, ScoreAdjustment adjustment) => db.ScoreAdjustments.Add(adjustment);
 }
