@@ -7,8 +7,10 @@ using ExamOps.Infra.Storage;
 using ExamOps.Infra.Verification;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http.Features;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])
@@ -21,6 +23,11 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])
 }
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 12 * 1024 * 1024);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 12 * 1024 * 1024);
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(30));
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+});
 builder.Services.AddInfrastructure(builder);
 var app = builder.Build();
 
@@ -90,9 +97,11 @@ if (args.Contains("--init-admin"))
     return;
 }
 
+app.UseForwardedHeaders();
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    app.UseHsts();
 }
 
 app.UseAuthentication();
@@ -111,7 +120,9 @@ app.MapPost("/logout", async (HttpContext httpContext, [FromForm] string? __Requ
     return Results.Redirect("/login");
 }).RequireAuthorization();
 
-app.MapGet("/health", async (IFileStorage storage, StartupValidator validator, CancellationToken cancellationToken) =>
+app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
+
+async Task<IResult> CheckReadinessAsync(IFileStorage storage, StartupValidator validator)
 {
     bool db;
     try
@@ -119,12 +130,17 @@ app.MapGet("/health", async (IFileStorage storage, StartupValidator validator, C
         await validator.ValidateAsync();
         db = true;
     }
-    catch (Exception ex) when (ex is InvalidOperationException or Npgsql.PostgresException)
+    catch (Exception ex) when (ex is InvalidOperationException or NpgsqlException or TimeoutException)
     {
         db = false;
     }
     var writable = storage.TryProbeWritable();
-    return Results.Ok(new { status = db && writable ? "ok" : "degraded", db, writable });
-});
+    var ready = db && writable;
+    var payload = new { status = ready ? "ok" : "unhealthy", db, writable };
+    return ready ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+}
+
+app.MapGet("/health/ready", CheckReadinessAsync);
+app.MapGet("/health", CheckReadinessAsync);
 
 app.Run();

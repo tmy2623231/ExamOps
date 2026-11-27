@@ -501,6 +501,33 @@ public sealed class Phase4Check(
                     && (await db.ExamAssignments.AsNoTracking().SingleAsync(x => x.Id == submitFirstRow.Id)).Status == "Revoked",
                     "submit then revoke serializes without resurrecting the assignment");
 
+                var keepScoreInProgressTask = await CreatePublishedTaskAsync(adminServices, db, codePrefix, "revoke-keep-inprogress", department.Id,
+                    paper.VersionId, checkClock.UtcNow, 2, "Score");
+                var keepScoreBatch = await AssignAsync(adminServices, db, keepScoreInProgressTask, suffix, "revoke-keep-inprogress",
+                    new AssignmentTargetInput([candidateA.Id], [], false, false, false));
+                var keepScoreAssignmentId = await GetSingleAssignmentIdAsync(keepScoreBatch, db);
+                var keepScoreRow = await db.ExamAssignments.AsNoTracking().SingleAsync(x => x.Id == keepScoreAssignmentId);
+                SetActor(candidateA.Id, candidateA.Username);
+                var keepScoreStart = await candidateAServices.Attempts.StartAsync(keepScoreRow.Id, new(keepScoreRow.RowVersion));
+                Check(keepScoreStart.IsSuccess, "start KeepScore in-progress attempt");
+                var keepScoreAttemptId = keepScoreStart.Value!.AttemptId;
+                var keepScoreAssignmentBeforeRevoke = await db.ExamAssignments.AsNoTracking().SingleAsync(x => x.Id == keepScoreRow.Id);
+                SetActor(admin.Id, admin.Username);
+                Check((await adminServices.Assignments.RevokeAsync(keepScoreRow.Id,
+                    new(keepScoreAssignmentBeforeRevoke.RowVersion, "Phase4 KeepScore 进行中答卷撤回自查", RevocationScope.KeepScore),
+                    Api(tracePrefix, "assignment-revoke-keep-inprogress"))).IsSuccess, "KeepScore revocation with in-progress attempt succeeds");
+                var keepScoreAttemptAfter = await db.ExamAttempts.AsNoTracking().SingleAsync(x => x.Id == keepScoreAttemptId);
+                Check(keepScoreAttemptAfter.Status == "Voided"
+                    && (await db.ExamAssignments.AsNoTracking().SingleAsync(x => x.Id == keepScoreRow.Id)).Status == "Revoked",
+                    "KeepScore revocation terminates unsubmitted in-progress attempt without leaving dangling InProgress state");
+                SetActor(candidateA.Id, candidateA.Username);
+                CheckFailure(await candidateAServices.Attempts.SaveAnswersAsync(keepScoreAttemptId,
+                    new() { RowVersion = keepScoreAttemptAfter.RowVersion, Answers = [] }),
+                    "ANSWER_FROZEN", "save after KeepScore revocation is rejected");
+                CheckFailure(await candidateAServices.Attempts.SubmitAsync(keepScoreAttemptId,
+                    new(keepScoreAttemptAfter.RowVersion)),
+                    "ATTEMPT_ALREADY_SUBMITTED", "submit after KeepScore revocation is rejected");
+
                 var taskRevoke = await CreatePublishedTaskAsync(adminServices, db, codePrefix, "task-revoke", department.Id,
                     paper.VersionId, checkClock.UtcNow, 2, "Score");
                 var taskRevokeAssignment = await AssignAsync(adminServices, db, taskRevoke, suffix, "task-revoke",

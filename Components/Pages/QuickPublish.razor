@@ -313,6 +313,7 @@ else
     private string? _error;
     private string? _reuseNotice;
     private QuickPublishResult? _published;
+    private string _publishIdempotencyKey = Guid.NewGuid().ToString("N");
 
     private long _departmentId;
     private long _bankId;
@@ -497,12 +498,12 @@ else
 
     private void JumpToStep(int target)
     {
-        if (target <= _step) { _error = null; _step = target; }
+        if (target <= _step) { _error = null; _step = target; _publishIdempotencyKey = Guid.NewGuid().ToString("N"); }
     }
 
     private void PrevStep()
     {
-        if (_step > 0) { _error = null; _step--; }
+        if (_step > 0) { _error = null; _step--; _publishIdempotencyKey = Guid.NewGuid().ToString("N"); }
     }
 
     private void NextStep()
@@ -561,7 +562,7 @@ else
                 _includeMultiple, _multipleCount, _multipleScore,
                 _includeTrueFalse, _trueFalseCount, _trueFalseScore,
                 from, to, _durationMinutes, _attemptLimit, _passScore, _resultReleasePolicy,
-                _assignWholeDepartment, _includeDescendants));
+                _assignWholeDepartment, _includeDescendants, _publishIdempotencyKey));
 
             if (!result.IsSuccess || result.Value is null)
             {
@@ -585,6 +586,7 @@ else
         _step = 0;
         _error = null;
         _examTitle = "";
+        _publishIdempotencyKey = Guid.NewGuid().ToString("N");
         SyncBankDefaults();
     }
 

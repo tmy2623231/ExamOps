@@ -165,6 +165,44 @@ dotnet run --no-launch-profile --project ExamOps.csproj --urls http://0.0.0.0:80
 
 ---
 
+## 🛡️ 生产部署、备份与回滚运维规范
+
+> [!IMPORTANT]
+> **部署架构边界（单实例）**：当前版本使用本地文件系统（`Data/uploads`、`Data/export`、`Data/logs`）、内存 Blazor SignalR Circuit、`UserSessionRegistry` 与进程内登录限流，生产环境请以**单实例部署**（前置 Nginx/Caddy 做 TLS 终止与反向代理，透传 `X-Forwarded-For` / `X-Forwarded-Proto`，并确保反代支持 WebSocket 长连接）。应用已配置 30 秒优雅停机（`ShutdownTimeout`）与就绪探针。
+
+### 1. 健康检查端点
+
+| 端点 | 用途 | 正常 | 异常 |
+| :--- | :--- | :--- | :--- |
+| `GET /health/live` | 存活探针（进程是否响应） | `200 OK` | — |
+| `GET /health/ready` / `GET /health` | 就绪探针（校验 PostgreSQL 连通与 Schema 1.1.0，并探测 `Data/uploads`、`Data/export`、`Data/tmp` 可写性） | `200 OK` | **`503 Service Unavailable`** |
+
+### 2. 数据库与上传文件一致性备份与恢复
+
+建议每日低峰期执行备份，并按月演练恢复：
+
+```powershell
+# 1. PostgreSQL 逻辑全量备份（自定义压缩格式，含索引与约束）
+pg_dump -h 127.0.0.1 -U postgres -Fc -f "backup/examops_$(Get-Date -Format yyyyMMdd_HHmm).dump" examops_db
+
+# 2. 同步备份 Data/uploads（题库导入源文件等业务附件）
+Compress-Archive -Path "Data/uploads" -DestinationPath "backup/uploads_$(Get-Date -Format yyyyMMdd_HHmm).zip" -Force
+
+# 3. 恢复演练（先停止应用，再恢复数据库与上传目录）
+pg_restore -h 127.0.0.1 -U postgres --clean --if-exists -d examops_db "backup/examops_YYYYMMDD_HHMM.dump"
+Expand-Archive -Path "backup/uploads_YYYYMMDD_HHMM.zip" -DestinationPath "Data" -Force
+```
+
+### 3. 版本兼容与“只回滚应用二进制”标准流程
+
+- **Schema 兼容策略**：当前应用启动强校验数据库处于 **`schema 1.1.0`**。在同 Schema 主次版本（`1.1.x`）内升级时，数据库变更均为向前兼容（如扩展 `CHECK` 约束、新增索引），**禁止执行破坏性降级脚本回退到 `1.0.0`**。
+- **标准回滚步骤（仅回滚应用二进制）**：
+  1. 停止当前 ExamOps 进程（等待最多 30s 优雅停机释放句柄与端口）；
+  2. 将发布目录切换回上一稳定版本的 `publish/` 制品（保持 `appsettings.json`、`Data/` 与 `schema 1.1.0` 数据库不变）；
+  3. 重新启动应用并检查 `GET /health/ready` 返回 `200 OK`，确认 `Data/logs/error/` 无新增异常。
+
+---
+
 ## 🧪 内置验证与自检命令
 
 <details>

@@ -115,6 +115,13 @@ public sealed class Phase1Check(
                 Check((await roles.GetPermissionsAsync()).Count == 37, "37 canonical permissions");
                 Check(await uow.Db.AuditEvents.AsNoTracking().CountAsync() > 0, "audit records written");
 
+                var auth = services.GetRequiredService<AuthService>();
+                var unknownLogin = await auth.LoginAsync($"nonexistent_{suffix}", "WrongPass123!", "127.0.0.1", "Phase1Check");
+                Check(!unknownLogin.IsSuccess && unknownLogin.Code == "INVALID_CREDENTIALS",
+                    "unknown username login returns INVALID_CREDENTIALS without 500 or enumeration");
+                Check(await uow.Db.AuditEvents.AsNoTracking().AnyAsync(x => x.Action == "auth.login_failed" && x.ActorId == null && x.ActorRole == "Anonymous"),
+                    "unknown username login writes Anonymous audit record");
+
                 var access = services.GetRequiredService<AccessRepository>();
                 var revocationProbe = new CurrentUserService(userId => access.GetAsync(userId, uow.Db), httpContextAccessor);
                 await revocationProbe.LoadAsync();

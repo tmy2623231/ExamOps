@@ -19,7 +19,10 @@ public static class MustChangePasswordMiddleware
                 && !path.StartsWithSegments("/css")
                 && !path.StartsWithSegments("/js")
                 && !path.StartsWithSegments("/img")
-                && !path.StartsWithSegments("/fonts"))
+                && !path.StartsWithSegments("/fonts")
+                && !path.StartsWithSegments("/app.css")
+                && !path.StartsWithSegments("/ExamOps.styles.css")
+                && !path.StartsWithSegments("/favicon.ico"))
             {
                 var currentUser = context.RequestServices.GetRequiredService<ICurrentUser>();
                 await currentUser.LoadAsync();

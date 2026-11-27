@@ -9,6 +9,7 @@ public static class ImportFileValidator
 {
     public const long MaxFileSizeBytes = 10 * 1024 * 1024;
     public const long MaxExpandedWorksheetXmlBytes = 20 * 1024 * 1024;
+    public const long MaxTotalExpandedBytes = 40 * 1024 * 1024;
     private const int MaxZipEntries = 256;
 
     public static ImportFileValidationResult Validate(Stream stream, string fileName)
@@ -125,6 +126,29 @@ public static class ImportFileValidator
             if (name.StartsWith("xl/embeddings/", StringComparison.OrdinalIgnoreCase))
             {
                 return Fail("EMBEDDINGS_NOT_ALLOWED", "XLSX不能包含OLE嵌入对象。");
+            }
+        }
+
+        // 校验全部 ZIP 条目累计解压预算，防止多条目压缩炸弹耗尽 CPU 与内存。
+        long totalExpanded = 0;
+        var scratch = new byte[8192];
+        foreach (var entry in entries)
+        {
+            if (entry.Length > MaxExpandedWorksheetXmlBytes)
+            {
+                return Fail("XML_TOO_LARGE", "XLSX的单个ZIP条目超过大小限制。");
+            }
+            using var entryStream = entry.Open();
+            long entryBytes = 0;
+            int read;
+            while ((read = entryStream.Read(scratch, 0, scratch.Length)) > 0)
+            {
+                entryBytes += read;
+                totalExpanded += read;
+                if (entryBytes > MaxExpandedWorksheetXmlBytes || totalExpanded > MaxTotalExpandedBytes)
+                {
+                    return Fail("XML_TOO_LARGE", "XLSX解压后总大小超过限制。");
+                }
             }
         }
 

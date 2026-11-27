@@ -32,7 +32,8 @@ public sealed record QuickPublishRequest(
     decimal? PassScore,
     string ResultReleasePolicy,
     bool AssignWholeDepartment,
-    bool IncludeDescendants);
+    bool IncludeDescendants,
+    string? IdempotencyKey = null);
 
 public sealed record QuickPublishResult(
     long PaperId,
