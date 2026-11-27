@@ -148,13 +148,20 @@ $env:EXAMOPS_ADMIN_PASSWORD = "<至少12位强密码>"
 dotnet run --project ExamOps.csproj -- --init-admin
 ```
 
-### 第 3 步：启动应用
+### 第 3 步：启动应用（默认监听 `0.0.0.0:5080`）
 
 ```powershell
-dotnet run --project ExamOps.csproj --urls http://localhost:5080
+# 默认绑定 0.0.0.0:5080（支持局域网 / 服务器直接访问）
+dotnet run --project ExamOps.csproj
+
+# 如需自定义端口，任选一种方式：
+$env:EXAMOPS_PORT = "8080"; dotnet run --project ExamOps.csproj
+# 或使用 ASP.NET Core 标准环境变量 / 命令行参数：
+$env:ASPNETCORE_URLS = "http://0.0.0.0:8080"; dotnet run --no-launch-profile --project ExamOps.csproj
+dotnet run --no-launch-profile --project ExamOps.csproj --urls http://0.0.0.0:8080
 ```
 
-打开浏览器访问 **`http://localhost:5080`**，使用 `admin` 与刚设置的密码登录即可体验完整运营看板与极速发考向导。
+打开浏览器访问 **`http://<服务器IP>:5080`**（本机访问 `http://localhost:5080`），使用 `admin` 与刚设置的密码登录即可体验完整运营看板与极速发考向导。
 
 ---
 

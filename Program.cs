@@ -11,6 +11,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http.Features;
 
 var builder = WebApplication.CreateBuilder(args);
+if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])
+    && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
+    && !builder.Configuration.GetSection("Kestrel:Endpoints").Exists())
+{
+    var port = Environment.GetEnvironmentVariable("EXAMOPS_PORT");
+    var listenPort = int.TryParse(port, out var p) && p is >= 1 and <= 65535 ? p : 5080;
+    builder.WebHost.UseUrls($"http://0.0.0.0:{listenPort}");
+}
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 12 * 1024 * 1024);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 12 * 1024 * 1024);
 builder.Services.AddInfrastructure(builder);
