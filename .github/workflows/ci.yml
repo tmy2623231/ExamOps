@@ -22,7 +22,7 @@ jobs:
       EXAMOPS_DB_CONNECTION: "Host=127.0.0.1;Port=5432;Database=examops_ci;Username=examops_ci;Password=offline-check-only;SSL Mode=Disable"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
