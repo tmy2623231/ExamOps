@@ -16,6 +16,6 @@ scripts/
 .env
 .env.*
 !.env.example
-appsettings.json
-appsettings.*.json
-!appsettings.example.json
+**/appsettings.json
+**/appsettings.*.json
+!**/appsettings.example.json

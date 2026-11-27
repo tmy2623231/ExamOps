@@ -232,15 +232,8 @@ public sealed class OrganizationService(
         department.RowVersion++;
         await audit.WriteAsync(uow.Db, clock, currentUser.GetAuditContext(), "org.department.update", "Department", id, before,
             new { department.Name, department.IsActive });
-        try
-        {
-            await uow.SaveChangesAsync();
-            return Result.Ok();
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return Result.Fail("部门已被其他管理员修改，请刷新后重试", "CONCURRENCY_CONFLICT");
-        }
+        await uow.SaveChangesAsync();
+        return Result.Ok();
     }
 
     public async Task<Result> SetDepartmentActiveAsync(long id, bool isActive, long expectedRowVersion)
@@ -261,15 +254,8 @@ public sealed class OrganizationService(
         department.RowVersion++;
         await audit.WriteAsync(uow.Db, clock, currentUser.GetAuditContext(), isActive ? "org.department.enable" : "org.department.disable", "Department", id, before,
             new { department.Name, department.IsActive });
-        try
-        {
-            await uow.SaveChangesAsync();
-            return Result.Ok();
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return Result.Fail("部门已被其他管理员修改，请刷新后重试", "CONCURRENCY_CONFLICT");
-        }
+        await uow.SaveChangesAsync();
+        return Result.Ok();
     }
 
     public async Task<OrganizationSummary> GetSummaryAsync()

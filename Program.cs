@@ -39,12 +39,10 @@ if (args.Contains("--import-parser-check"))
 
 if (args.Contains("--self-check"))
 {
-    new SelfCheck(builder.Environment, new ExamOps.Model.Common.SystemClock()).Run();
+    var selfCheck = app.Services.GetRequiredService<SelfCheck>();
+    selfCheck.Run();
     return;
 }
-
-builder.Services.AddInfrastructure(builder);
-var app = builder.Build();
 
 await app.Services.GetRequiredService<StartupValidator>().ValidateAsync();
 var roots = ServiceCollectionExtensions.ResolveDataRoots(builder);
@@ -94,12 +92,8 @@ if (args.Contains("--init-admin"))
 {
     using var scope = app.Services.CreateScope();
     var result = await scope.ServiceProvider.GetRequiredService<AdminBootstrap>().InitializeAsync();
-    if (result.IsSuccess) app.Logger.LogInformation("管理员初始化完成。");
-    else
-    {
-        app.Logger.LogError("管理员初始化失败：{Error}", result.Error);
-        Environment.ExitCode = 1;
-    }
+    Console.WriteLine(result.IsSuccess ? "管理员初始化完成。" : result.Error);
+    Environment.ExitCode = result.IsSuccess ? 0 : 1;
     return;
 }
 
@@ -109,11 +103,6 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
     app.UseHsts();
 }
-
-app.UseForwardedHeaders();
-
-if (!app.Environment.IsDevelopment())
-    app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();

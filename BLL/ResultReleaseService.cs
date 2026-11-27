@@ -43,7 +43,7 @@ public sealed class ResultReleaseService(
                 var current = await tasks.GetTrackedAsync(db, taskId) ?? throw new InvalidOperationException("NOT_FOUND");
                 if (current.ResultStatus == "Published") throw new InvalidOperationException("RESULT_ALREADY_PUBLISHED");
                 if (current.RowVersion != input.RowVersion) throw new InvalidOperationException("ROW_VERSION_CONFLICT");
-                result = await PublishCoreAsync(db, current, currentUser.Id, IdempotencyKeyFactory.Create(currentUser, api, $"result-publish:{taskId}"), clock.UtcNow, false);
+                result = await PublishCoreAsync(db, current, currentUser.Id, RequiredKey(api), clock.UtcNow, false);
                 await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, result), "exam_result.publish", "ExamTask", taskId,
                     after: result, eventKey: $"result-publish:{taskId}:{result.ReleaseNo}");
                 await db.SaveChangesAsync();
@@ -274,6 +274,7 @@ public sealed class ResultReleaseService(
     private static bool IsBusinessError(InvalidOperationException ex)
         => ex.Message is "NOT_FOUND" or "ROW_VERSION_CONFLICT" or "RESULT_ALREADY_PUBLISHED" or "RESULT_NOT_READY"
             or "RESULT_POLICY_BLOCKED" or "RESULT_NOT_PUBLISHED";
+    private static string RequiredKey(ApiAuditMetadata? api) => api?.IdempotencyKey ?? throw new InvalidOperationException("操作必须提供幂等键");
     private Result<T> Failure<T>() => currentUser.IsAuthenticated
         ? Result<T>.Fail("权限不足", "PERMISSION_DENIED") : Result<T>.Fail("请先登录", "UNAUTHENTICATED");
     private static Result<T> Conflict<T>() => Result<T>.Fail("同一幂等键不能用于不同请求", "IDEMPOTENCY_CONFLICT");

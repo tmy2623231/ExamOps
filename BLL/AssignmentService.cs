@@ -105,7 +105,7 @@ public sealed class AssignmentService(
                 AssignmentBatchRow[] rows;
                 var batch = new AssignmentBatch
                 {
-                    TaskId = taskId, IdempotencyKey = IdempotencyKeyFactory.Create(currentUser, api, $"assignment-batch:{taskId}"), TargetJson = Serialize(input.Target), Status = "Pending",
+                    TaskId = taskId, IdempotencyKey = RequiredKey(api), TargetJson = Serialize(input.Target), Status = "Pending",
                     TotalCount = targets.Count, CreatedBy = ActorId(), CreatedAt = now, RowVersion = 1
                 };
                 await assignments.AddBatchAsync(db, batch, []);
@@ -231,7 +231,7 @@ public sealed class AssignmentService(
                 if (assignment is null) throw new InvalidOperationException("NOT_FOUND");
                 if (assignment.RowVersion != input.RowVersion) throw new InvalidOperationException("CONCURRENCY_CONFLICT");
                 var grant = new RetakeGrant { AssignmentId = assignmentId, ExtraAttempts = input.ExtraAttempts, Reason = input.Reason.Trim(),
-                    GrantedBy = ActorId(), ExpiresAt = input.ExpiresAt, IdempotencyKey = IdempotencyKeyFactory.Create(currentUser, api, $"retake:{assignmentId}"), CreatedAt = clock.UtcNow };
+                    GrantedBy = ActorId(), ExpiresAt = input.ExpiresAt, IdempotencyKey = $"retake:{RequiredKey(api)}", CreatedAt = clock.UtcNow };
                 db.RetakeGrants.Add(grant); assignment.RowVersion++;
                 await db.SaveChangesAsync();
                 await audit.WriteAsync(db, clock, idempotency.BuildAuditContext(api, new { assignmentId, grantId = grant.Id }), "exam_assignment.grant_retake", "ExamAssignment", assignmentId,
@@ -348,7 +348,7 @@ public sealed class AssignmentService(
         await db.SaveChangesAsync();
         db.RevocationRecords.Add(new RevocationRecord { TargetType = "ExamAssignment", TargetId = assignment.Id, Scope = policy,
             Reason = reason, ImpactJson = Serialize(new { inProgressAttemptId = inProgress?.Id }), ActorId = ActorId(), ActorRole = "User",
-            IdempotencyKey = IdempotencyKeyFactory.Create(currentUser, api, $"assignment-revoke:{assignment.Id}"), CreatedAt = now });
+            IdempotencyKey = $"assignment-revoke:{RequiredKey(api)}:{assignment.Id}", CreatedAt = now });
         var batchRow = await db.AssignmentBatchRows.FirstOrDefaultAsync(x => x.AssignmentId == assignment.Id && x.Status == "Success");
         if (batchRow is not null && await db.AssignmentBatches.AsNoTracking().AnyAsync(x => x.Id == batchRow.BatchId && x.Status != "Completed" && x.Status != "Revoked"))
         { batchRow.Status = "Revoked"; batchRow.RowVersion++; batchRow.UpdatedAt = now; }
@@ -366,6 +366,7 @@ public sealed class AssignmentService(
     { if (!currentUser.IsAuthenticated || !currentUser.HasPermission(permission)) throw new UnauthorizedAccessException("权限不足"); }
     private bool Can(string permission) => currentUser.IsAuthenticated && currentUser.HasPermission(permission);
     private long ActorId() => currentUser.Id ?? throw new InvalidOperationException("认证用户缺少 ID");
+    private static string RequiredKey(ApiAuditMetadata? api) => api?.IdempotencyKey ?? throw new InvalidOperationException("操作必须提供幂等键");
     private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonOptions);
     private static Result Failure() => Result.Fail("权限不足", "PERMISSION_DENIED");
     private static Result<T> Failure<T>() => Result<T>.Fail("权限不足", "PERMISSION_DENIED");

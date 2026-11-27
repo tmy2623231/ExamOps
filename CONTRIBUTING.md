@@ -10,11 +10,15 @@
 4. 执行以下检查：
 
 ```powershell
+$env:EXAMOPS_DB_CONNECTION = "Host=127.0.0.1;Port=5432;Database=examops_check;Username=examops_check;Password=offline-check-only;SSL Mode=Disable"
+
 dotnet restore ExamOps.sln
 dotnet build ExamOps.sln --configuration Release --no-restore
 dotnet run --no-build --configuration Release --project ExamOps.csproj -- --self-check
 dotnet run --no-build --configuration Release --project ExamOps.csproj -- --import-parser-check
 ```
+
+离线自检不会连接 PostgreSQL，但依赖注入阶段仍要求格式合法的连接串。
 
 涉及数据库变更时，还必须更新 `sql/schema.sql` 与 `sql/smoke_test.sql`，并在临时数据库中执行验证。项目采用 SQL-first，禁止同时引入 EF Migrations。
 

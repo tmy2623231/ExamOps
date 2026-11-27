@@ -6,7 +6,6 @@ using ExamOps.Model.Common;
 using ExamOps.Model.Dtos;
 using ExamOps.Model.Entities;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 namespace ExamOps.BLL;
 
@@ -88,7 +87,7 @@ public sealed class ExamReviewService(
                 if (attempt.Status is not ("Submitted" or "AutoSubmitted" or "Graded")) throw new InvalidOperationException("ATTEMPT_NOT_SUBMITTED");
                 if (!await reviews.HasObjectiveAnswersAsync(db, attemptId)) throw new InvalidOperationException("OBJECTIVE_QUESTION_REQUIRED");
                 var now = clock.UtcNow;
-                var eventKey = IdempotencyKeyFactory.Create(currentUser, api, $"attempt-review:{attemptId}");
+                var eventKey = RequiredKey(api, $"attempt-review:{attemptId}");
                 var entity = new AttemptEvent
                 {
                     AttemptId = attemptId, ActorId = currentUser.Id, EventType = input.ReviewType,
@@ -112,8 +111,6 @@ public sealed class ExamReviewService(
             || ex.Message.StartsWith("RESULT_") || ex.Message.StartsWith("ATTEMPT_"))
         { return Result<ReviewEventResult>.Fail(MessageFor(ex.Message), ex.Message); }
         catch (DbUpdateConcurrencyException) { return Concurrency<ReviewEventResult>(); }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        { return Conflict<ReviewEventResult>(); }
     }
 
     public async Task<Result<AdjustScoreResult>> AdjustScoreAsync(long attemptId, AdjustScoreInput input, ApiAuditMetadata? api = null)
@@ -147,8 +144,8 @@ public sealed class ExamReviewService(
                 if (attempt.Status != "Graded") throw new InvalidOperationException("ATTEMPT_NOT_GRADED");
                 if (attempt.Score != input.OldScore) throw new InvalidOperationException("OLD_SCORE_MISMATCH");
                 if (input.NewScore > attempt.MaxScore) throw new InvalidOperationException("SCORE_OUT_OF_RANGE");
-                var key = IdempotencyKeyFactory.Create(currentUser, api, $"attempt-score:{attemptId}");
-                var existing = await reviews.GetAdjustmentByKeyAsync(db, attemptId, key);
+                var key = RequiredKey(api, $"attempt-score:{attemptId}");
+                var existing = await reviews.GetAdjustmentByKeyAsync(db, key);
                 if (existing is not null)
                 {
                     result = new(existing.Id, attemptId, existing.NewScore, attempt.AutoScore ?? 0, attempt.Status, attempt.RowVersion, true);
@@ -183,8 +180,6 @@ public sealed class ExamReviewService(
             or "ATTEMPT_NOT_GRADED" or "OLD_SCORE_MISMATCH" or "SCORE_OUT_OF_RANGE")
         { return Result<AdjustScoreResult>.Fail(MessageFor(ex.Message), ex.Message); }
         catch (DbUpdateConcurrencyException) { return Concurrency<AdjustScoreResult>(); }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        { return Conflict<AdjustScoreResult>(); }
     }
 
     public async Task<PagedResult<ScoreAdjustmentRow>> GetAdjustmentsAsync(long attemptId, int pageIndex, int pageSize)
@@ -210,6 +205,9 @@ public sealed class ExamReviewService(
 
     private static AttemptEvent NewEvent(long attemptId, long? actorId, string type, object payload, string key, DateTime now)
         => new() { AttemptId = attemptId, ActorId = actorId, EventType = type, PayloadJson = Serialize(payload), OccurredAt = now, EventKey = key };
+
+    private static string RequiredKey(ApiAuditMetadata? api, string prefix)
+        => string.IsNullOrWhiteSpace(api?.IdempotencyKey) ? $"{prefix}:{Guid.NewGuid():N}" : api.IdempotencyKey;
 
     private static string Serialize(object value) => JsonSerializer.Serialize(value, JsonOptions);
 

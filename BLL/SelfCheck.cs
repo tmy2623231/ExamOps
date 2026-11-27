@@ -1,6 +1,5 @@
 using ExamOps.Infra.Background;
 using ExamOps.Model.Common;
-using ExamOps.Model.Dtos;
 using ExamOps.Model.Enums;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,19 +29,8 @@ public sealed class SelfCheck(IHostEnvironment environment, IClock clock)
             "department scope excludes children");
         Check(DataScopeRules.MatchesDepartment("DepartmentSubtree", 3, "001.002.001.", 2, "001.002."),
             "department subtree scope includes children");
-        CheckIdempotencyKeys();
         CheckCleanup();
         Console.WriteLine($"Self-check passed: {_checks} assertions.");
-    }
-
-    private void CheckIdempotencyKeys()
-    {
-        var api = new ApiAuditMetadata("same-key", "hash", "POST", "/api/attempts/{attemptId}/review");
-        var first = IdempotencyKeyFactory.Create(1, api, "attempt-review:10");
-        Check(first == IdempotencyKeyFactory.Create(1, api, "attempt-review:10"), "idempotency key is stable");
-        Check(first != IdempotencyKeyFactory.Create(2, api, "attempt-review:10"), "idempotency key is actor scoped");
-        Check(first != IdempotencyKeyFactory.Create(1, api, "attempt-review:11"), "idempotency key is resource scoped");
-        Check(first.Length <= 128, "idempotency key fits database column");
     }
 
     private void CheckCleanup()
